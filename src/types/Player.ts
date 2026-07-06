@@ -88,6 +88,31 @@ export interface UnresolvedQuery {
 	requester?: unknown;
 }
 
+/**
+ * A queue item that carries only search hints (title/author/…) and is resolved
+ * into a playable {@link Track} lazily, right before it plays. Build one with
+ * `manager.buildUnresolved(query)`.
+ */
+export interface UnresolvedTrack {
+	/** Discriminator — always `true`. */
+	readonly unresolved: true;
+	title: string;
+	author?: string;
+	duration?: number;
+	uri?: string;
+	sourceName?: string;
+	isrc?: string | null;
+	artworkUrl?: string | null;
+	pluginInfo?: Record<string, unknown>;
+	userData?: Record<string, unknown>;
+	requester?: unknown;
+	/** Resolves this into a playable {@link Track} (throws if nothing matches). */
+	resolve(): Promise<Track>;
+}
+
+/** Anything that can live in the {@link Queue}: a resolved or unresolved track. */
+export type QueueItem = Track | UnresolvedTrack;
+
 export type LoadType = "track" | "playlist" | "search" | "empty" | "error";
 
 export interface PlaylistInfo {

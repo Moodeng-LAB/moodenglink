@@ -11,10 +11,10 @@ import type {
 	WebSocketClosedEvent,
 	PlayerState,
 } from "../types/Op";
-import type { PlayerOptions, State, Track, VoiceServer } from "../types/Player";
+import type { PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
 import type { UpdatePlayerBody } from "../types/Rest";
-import { buildTrack, clamp } from "../utils/utils";
+import { buildTrack, clamp, isUnresolvedTrack } from "../utils/utils";
 import type { Filters } from "./Filters";
 import type { Moodenglink } from "./Moodenglink";
 import type { Node } from "./Node";
@@ -23,7 +23,7 @@ import { Structure } from "./Structure";
 
 export interface PlayOptions {
 	/** A specific track to play instead of pulling from the queue. */
-	track?: Track;
+	track?: QueueItem;
 	/** Start position in ms. */
 	startTime?: number;
 	/** End position in ms. */
@@ -161,7 +161,18 @@ export class Player {
 
 	/** Starts playback. With no options, plays the next queued track. */
 	public async play(options: PlayOptions = {}): Promise<this> {
-		const track = options.track ?? this.queue.shift() ?? null;
+		let track: Track | null = null;
+
+		if (options.track) {
+			track = isUnresolvedTrack(options.track) ? await this.resolveUnresolved(options.track) : options.track;
+		} else {
+			// Pull items until one resolves to a playable track.
+			while (this.queue.length && !track) {
+				const item = this.queue.shift()!;
+				track = isUnresolvedTrack(item) ? await this.resolveUnresolved(item) : item;
+			}
+		}
+
 		if (!track) throw new Error("Queue is empty — nothing to play.");
 
 		this.queue.current = track;
@@ -181,6 +192,16 @@ export class Player {
 		this.position = options.startTime ?? 0;
 		await this.save();
 		return this;
+	}
+
+	/** @internal Resolves an unresolved queue item, swallowing failures (returns null). */
+	private async resolveUnresolved(item: UnresolvedTrack): Promise<Track | null> {
+		try {
+			return await item.resolve();
+		} catch (error) {
+			this.manager.emit("debug", `[Player ${this.guild}] Failed to resolve "${item.title}": ${(error as Error).message}`);
+			return null;
+		}
 	}
 
 	/** Stops the current track. Pass `false` to keep the queue intact. */

@@ -13,6 +13,7 @@ import type {
 	Track,
 	TrackData,
 	UnresolvedQuery,
+	UnresolvedTrack,
 	VoicePacket,
 	VoiceServer,
 	VoiceState,
@@ -21,7 +22,7 @@ import type {
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
 import { TTLCache } from "../utils/cache";
-import { buildTrack, partialTrack } from "../utils/utils";
+import { buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
 import { Node } from "./Node";
 import { Player } from "./Player";
 import { Structure } from "./Structure";
@@ -334,7 +335,37 @@ export class Moodenglink extends EventEmitter {
 	public async resolve(query: UnresolvedQuery): Promise<Track | null> {
 		const search = `${query.author ? `${query.author} - ` : ""}${query.title}`;
 		const res = await this.search({ query: query.uri ?? search, source: query.source as SearchPlatform }, query.requester).catch(() => null);
-		return res?.tracks[0] ?? null;
+		if (!res?.tracks.length) return null;
+		return pickClosestTrack(res.tracks, query) ?? res.tracks[0];
+	}
+
+	/**
+	 * Wraps a query into an {@link UnresolvedTrack} you can push straight onto a
+	 * queue. It is resolved to a playable track lazily, the moment it plays —
+	 * ideal for Spotify/Apple metadata that only YouTube/SoundCloud can stream.
+	 */
+	public buildUnresolved(query: UnresolvedQuery): UnresolvedTrack {
+		const manager = this;
+		const unresolved: UnresolvedTrack = {
+			unresolved: true,
+			title: query.title,
+			author: query.author,
+			duration: query.duration,
+			uri: query.uri,
+			sourceName: query.source,
+			isrc: null,
+			artworkUrl: null,
+			pluginInfo: {},
+			userData: {},
+			requester: query.requester,
+			async resolve(): Promise<Track> {
+				const track = await manager.resolve(query);
+				if (!track) throw new Error(`No playable match for "${query.title}".`);
+				track.requester = query.requester;
+				return track;
+			},
+		};
+		return unresolved;
 	}
 
 	/** Cleanly disconnects every node and destroys every player. */

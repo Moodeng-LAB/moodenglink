@@ -35,6 +35,9 @@ Last updated: 2026-07-06
 - ✅ **Search cache** — opt-in TTL/LRU (`TTLCache`), re-stamps requester on hits
 - ✅ **REST resilience** — retry transient failures, `?trace=true`, typed `RestError`
 - ✅ **Lyrics** (LavaLyrics) — static + live line events (`lyricsFound/Line/NotFound`)
+- ✅ **Unresolved tracks** — `manager.buildUnresolved(query)` queue items resolved
+      lazily at `play()` time (Spotify/Apple metadata → playable), closest-match
+      heuristic, failed items skipped automatically
 - ✅ **Persistence / resume** — `SessionStore` + `MemoryStore` & `RedisStore` adapters
 - ✅ **`Structure.extend()`** — subclass Player / Queue / Node / Filters; the manager
       instantiates the extended classes everywhere (Erela/Magmastream-style)
@@ -53,10 +56,7 @@ Last updated: 2026-07-06
 
 ## 🚧 In progress
 
-- 🚧 **Unresolved tracks in-queue** — `manager.resolve()` exists; auto-resolving an
-      `UnresolvedQuery` at `play()` time (lazy Spotify→YouTube) is not wired yet
-- ✅ **Filter state ergonomics** — `filters.set(partial)` merge + apply, and
-      `filters.toJSON()` snapshot (done)
+- _Nothing actively in progress — see Planned below._
 
 ---
 

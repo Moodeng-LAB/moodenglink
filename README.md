@@ -250,6 +250,31 @@ class MyPlugin extends Plugin {
 manager.use(new MyPlugin());
 ```
 
+## 🔮 Unresolved tracks (lazy resolve)
+
+Queue Spotify/Apple metadata now, resolve to a playable source the moment it plays —
+no wasted searches for tracks the user skips past.
+
+```ts
+// e.g. from a Spotify playlist you fetched yourself
+for (const item of spotifyItems) {
+  player.queue.add(
+    manager.buildUnresolved({
+      title: item.name,
+      author: item.artists[0].name,
+      duration: item.duration_ms,
+      source: "youtube",      // where to resolve from
+      requester: interaction.user.id,
+    }),
+  );
+}
+
+await player.play(); // the first item is resolved here, closest-match by author + duration
+```
+
+Items that can't be resolved are skipped automatically. Use `isUnresolvedTrack(item)`
+to tell queue entries apart.
+
 ## 🧬 Extending structures
 
 Swap in your own subclasses — the manager will instantiate them everywhere:

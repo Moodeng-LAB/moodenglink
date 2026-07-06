@@ -163,6 +163,29 @@ interface UnresolvedQuery {
     source?: string;
     requester?: unknown;
 }
+/**
+ * A queue item that carries only search hints (title/author/…) and is resolved
+ * into a playable {@link Track} lazily, right before it plays. Build one with
+ * `manager.buildUnresolved(query)`.
+ */
+interface UnresolvedTrack {
+    /** Discriminator — always `true`. */
+    readonly unresolved: true;
+    title: string;
+    author?: string;
+    duration?: number;
+    uri?: string;
+    sourceName?: string;
+    isrc?: string | null;
+    artworkUrl?: string | null;
+    pluginInfo?: Record<string, unknown>;
+    userData?: Record<string, unknown>;
+    requester?: unknown;
+    /** Resolves this into a playable {@link Track} (throws if nothing matches). */
+    resolve(): Promise<Track>;
+}
+/** Anything that can live in the {@link Queue}: a resolved or unresolved track. */
+type QueueItem = Track | UnresolvedTrack;
 type LoadType = "track" | "playlist" | "search" | "empty" | "error";
 interface PlaylistInfo {
     name: string;
@@ -614,35 +637,35 @@ declare class Filters {
  * @module classes/Queue
  */
 
-declare class Queue extends Array<Track> {
+declare class Queue extends Array<QueueItem> {
     static get [Symbol.species](): ArrayConstructor;
-    /** The track that is currently playing (or was, once it ends). */
+    /** The track that is currently playing (or was, once it ends). Always resolved. */
     current: Track | null;
     /** Previously played tracks, most-recent-first. */
     previous: Track[];
-    /** Total duration of the queue (excluding the current track), in ms. */
+    /** Total duration of the upcoming tracks (best-effort for unresolved ones), in ms. */
     get duration(): number;
     /** Total number of upcoming tracks. */
     get size(): number;
     /** Whether there are no upcoming tracks. */
     get isEmpty(): boolean;
-    /** Adds one or more tracks to the end of the queue, or at `offset`. */
-    add(track: Track | Track[], offset?: number): this;
+    /** Adds one or more tracks (resolved or unresolved) to the queue, or at `offset`. */
+    add(track: QueueItem | QueueItem[], offset?: number): this;
     /** Removes and returns tracks. `remove(index)` or `remove(start, end)`. */
-    remove(start?: number, end?: number): Track[];
+    remove(start?: number, end?: number): QueueItem[];
     /** Empties all upcoming tracks. */
     clear(): void;
     /** Shuffles the upcoming tracks in place. */
     shuffle(): void;
     /** Moves a track from one position to another. */
     move(from: number, to: number): void;
-    /** Removes duplicate tracks by encoded string, keeping the first occurrence. */
+    /** Removes duplicate tracks, keeping the first occurrence. */
     dedupe(): void;
 }
 
 interface PlayOptions {
     /** A specific track to play instead of pulling from the queue. */
-    track?: Track;
+    track?: QueueItem;
     /** Start position in ms. */
     startTime?: number;
     /** End position in ms. */
@@ -693,6 +716,8 @@ declare class Player {
     moveNode(node: Node): Promise<this>;
     /** Starts playback. With no options, plays the next queued track. */
     play(options?: PlayOptions): Promise<this>;
+    /** @internal Resolves an unresolved queue item, swallowing failures (returns null). */
+    private resolveUnresolved;
     /** Stops the current track. Pass `false` to keep the queue intact. */
     stop(clearQueue?: boolean): Promise<this>;
     /** Skips `amount` tracks (default 1) by ending the current track early. */
@@ -918,6 +943,12 @@ declare class Moodenglink extends EventEmitter {
     use(plugin: Plugin): this;
     /** Resolves an {@link UnresolvedQuery} into a playable {@link Track}. */
     resolve(query: UnresolvedQuery): Promise<Track | null>;
+    /**
+     * Wraps a query into an {@link UnresolvedTrack} you can push straight onto a
+     * queue. It is resolved to a playable track lazily, the moment it plays —
+     * ideal for Spotify/Apple metadata that only YouTube/SoundCloud can stream.
+     */
+    buildUnresolved(query: UnresolvedQuery): UnresolvedTrack;
     /** Cleanly disconnects every node and destroys every player. */
     destroyAll(): Promise<void>;
 }
@@ -1019,6 +1050,16 @@ declare function buildTrack(data: TrackData, requester?: unknown): Track;
 declare function partialTrack(track: Track, partial: (keyof Track)[]): Track;
 /** Type-guard that a value is a plain object. */
 declare function isObject(value: unknown): value is Record<string, unknown>;
+/** Type-guard for a queue item that still needs resolving before playback. */
+declare function isUnresolvedTrack(item: QueueItem): item is UnresolvedTrack;
+/**
+ * Picks the search result that best matches an unresolved track — preferring a
+ * matching author and the closest duration (within ~2s), else the first result.
+ */
+declare function pickClosestTrack(tracks: Track[], ref: {
+    author?: string;
+    duration?: number;
+}): Track | undefined;
 /** Formats a millisecond duration as `hh:mm:ss` / `mm:ss`. */
 declare function formatDuration(ms: number): string;
 /** Clamps a number into an inclusive range. */
@@ -1054,4 +1095,4 @@ declare class TTLCache<K, V> {
 
 declare const version = "1.0.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUrl, leastLoadNode, leastUsedNode, partialTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };

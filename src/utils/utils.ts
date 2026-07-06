@@ -3,7 +3,7 @@
  * @module utils/utils
  */
 
-import type { Track, TrackData } from "../types/Player";
+import type { QueueItem, Track, TrackData, UnresolvedTrack } from "../types/Player";
 
 /** Builds a flattened {@link Track} from raw Lavalink track data. */
 export function buildTrack(data: TrackData, requester?: unknown): Track {
@@ -41,6 +41,35 @@ export function partialTrack(track: Track, partial: (keyof Track)[]): Track {
 /** Type-guard that a value is a plain object. */
 export function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Type-guard for a queue item that still needs resolving before playback. */
+export function isUnresolvedTrack(item: QueueItem): item is UnresolvedTrack {
+	return (item as UnresolvedTrack)?.unresolved === true;
+}
+
+/**
+ * Picks the search result that best matches an unresolved track — preferring a
+ * matching author and the closest duration (within ~2s), else the first result.
+ */
+export function pickClosestTrack(tracks: Track[], ref: { author?: string; duration?: number }): Track | undefined {
+	if (!tracks.length) return undefined;
+
+	const author = ref.author?.toLowerCase();
+	if (author) {
+		const byAuthor = tracks.find((t) => {
+			const a = t.author?.toLowerCase() ?? "";
+			return a.includes(author) || author.includes(a);
+		});
+		if (byAuthor) return byAuthor;
+	}
+
+	if (typeof ref.duration === "number") {
+		const byDuration = tracks.find((t) => Math.abs((t.duration || 0) - ref.duration!) <= 2000);
+		if (byDuration) return byDuration;
+	}
+
+	return tracks[0];
 }
 
 /** Formats a millisecond duration as `hh:mm:ss` / `mm:ss`. */

@@ -53,10 +53,12 @@ __export(index_exports, {
   clamp: () => clamp,
   formatDuration: () => formatDuration,
   isObject: () => isObject,
+  isUnresolvedTrack: () => isUnresolvedTrack,
   isUrl: () => isUrl,
   leastLoadNode: () => leastLoadNode,
   leastUsedNode: () => leastUsedNode,
   partialTrack: () => partialTrack,
+  pickClosestTrack: () => pickClosestTrack,
   shuffleArray: () => shuffleArray,
   sleep: () => sleep,
   version: () => version
@@ -173,6 +175,25 @@ function partialTrack(track, partial) {
 }
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isUnresolvedTrack(item) {
+  return item?.unresolved === true;
+}
+function pickClosestTrack(tracks, ref) {
+  if (!tracks.length) return void 0;
+  const author = ref.author?.toLowerCase();
+  if (author) {
+    const byAuthor = tracks.find((t) => {
+      const a = t.author?.toLowerCase() ?? "";
+      return a.includes(author) || author.includes(a);
+    });
+    if (byAuthor) return byAuthor;
+  }
+  if (typeof ref.duration === "number") {
+    const byDuration = tracks.find((t) => Math.abs((t.duration || 0) - ref.duration) <= 2e3);
+    if (byDuration) return byDuration;
+  }
+  return tracks[0];
 }
 function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "00:00";
@@ -788,7 +809,15 @@ var Player = class {
   /* ------------------------------- playback ------------------------------- */
   /** Starts playback. With no options, plays the next queued track. */
   async play(options = {}) {
-    const track = options.track ?? this.queue.shift() ?? null;
+    let track = null;
+    if (options.track) {
+      track = isUnresolvedTrack(options.track) ? await this.resolveUnresolved(options.track) : options.track;
+    } else {
+      while (this.queue.length && !track) {
+        const item = this.queue.shift();
+        track = isUnresolvedTrack(item) ? await this.resolveUnresolved(item) : item;
+      }
+    }
     if (!track) throw new Error("Queue is empty \u2014 nothing to play.");
     this.queue.current = track;
     const body = {
@@ -804,6 +833,15 @@ var Player = class {
     this.position = options.startTime ?? 0;
     await this.save();
     return this;
+  }
+  /** @internal Resolves an unresolved queue item, swallowing failures (returns null). */
+  async resolveUnresolved(item) {
+    try {
+      return await item.resolve();
+    } catch (error) {
+      this.manager.emit("debug", `[Player ${this.guild}] Failed to resolve "${item.title}": ${error.message}`);
+      return null;
+    }
   }
   /** Stops the current track. Pass `false` to keep the queue intact. */
   async stop(clearQueue = true) {
@@ -1014,7 +1052,7 @@ var Player = class {
 var Queue = class extends Array {
   constructor() {
     super(...arguments);
-    /** The track that is currently playing (or was, once it ends). */
+    /** The track that is currently playing (or was, once it ends). Always resolved. */
     this.current = null;
     /** Previously played tracks, most-recent-first. */
     this.previous = [];
@@ -1025,7 +1063,7 @@ var Queue = class extends Array {
   static get [Symbol.species]() {
     return Array;
   }
-  /** Total duration of the queue (excluding the current track), in ms. */
+  /** Total duration of the upcoming tracks (best-effort for unresolved ones), in ms. */
   get duration() {
     return this.reduce((acc, track) => acc + (track.duration || 0), 0);
   }
@@ -1037,7 +1075,7 @@ var Queue = class extends Array {
   get isEmpty() {
     return this.length === 0;
   }
-  /** Adds one or more tracks to the end of the queue, or at `offset`. */
+  /** Adds one or more tracks (resolved or unresolved) to the queue, or at `offset`. */
   add(track, offset) {
     const tracks = Array.isArray(track) ? track : [track];
     if (offset === void 0 || offset >= this.length) this.push(...tracks);
@@ -1063,15 +1101,17 @@ var Queue = class extends Array {
     const [track] = this.splice(from, 1);
     this.splice(to, 0, track);
   }
-  /** Removes duplicate tracks by encoded string, keeping the first occurrence. */
+  /** Removes duplicate tracks, keeping the first occurrence. */
   dedupe() {
     const seen = /* @__PURE__ */ new Set();
     for (let i = 0; i < this.length; i++) {
-      if (seen.has(this[i].encoded)) {
+      const item = this[i];
+      const key = isUnresolvedTrack(item) ? item.uri ?? item.title : item.encoded;
+      if (seen.has(key)) {
         this.splice(i, 1);
         i--;
       } else {
-        seen.add(this[i].encoded);
+        seen.add(key);
       }
     }
   }
@@ -1344,7 +1384,36 @@ var Moodenglink = class extends import_node_events.EventEmitter {
   async resolve(query) {
     const search = `${query.author ? `${query.author} - ` : ""}${query.title}`;
     const res = await this.search({ query: query.uri ?? search, source: query.source }, query.requester).catch(() => null);
-    return res?.tracks[0] ?? null;
+    if (!res?.tracks.length) return null;
+    return pickClosestTrack(res.tracks, query) ?? res.tracks[0];
+  }
+  /**
+   * Wraps a query into an {@link UnresolvedTrack} you can push straight onto a
+   * queue. It is resolved to a playable track lazily, the moment it plays —
+   * ideal for Spotify/Apple metadata that only YouTube/SoundCloud can stream.
+   */
+  buildUnresolved(query) {
+    const manager = this;
+    const unresolved = {
+      unresolved: true,
+      title: query.title,
+      author: query.author,
+      duration: query.duration,
+      uri: query.uri,
+      sourceName: query.source,
+      isrc: null,
+      artworkUrl: null,
+      pluginInfo: {},
+      userData: {},
+      requester: query.requester,
+      async resolve() {
+        const track = await manager.resolve(query);
+        if (!track) throw new Error(`No playable match for "${query.title}".`);
+        track.requester = query.requester;
+        return track;
+      }
+    };
+    return unresolved;
   }
   /** Cleanly disconnects every node and destroys every player. */
   async destroyAll() {
@@ -1433,10 +1502,12 @@ var version = "1.0.0";
   clamp,
   formatDuration,
   isObject,
+  isUnresolvedTrack,
   isUrl,
   leastLoadNode,
   leastUsedNode,
   partialTrack,
+  pickClosestTrack,
   shuffleArray,
   sleep,
   version
