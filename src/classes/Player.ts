@@ -1,0 +1,393 @@
+/**
+ * A guild-scoped music player: voice connection, queue control and playback.
+ * @module classes/Player
+ */
+
+import type {
+	TrackEndEvent,
+	TrackExceptionEvent,
+	TrackStartEvent,
+	TrackStuckEvent,
+	WebSocketClosedEvent,
+	PlayerState,
+} from "../types/Op";
+import type { PlayerOptions, State, Track, VoiceServer } from "../types/Player";
+import { RepeatMode } from "../types/Player";
+import type { UpdatePlayerBody } from "../types/Rest";
+import { buildTrack, clamp } from "../utils/utils";
+import { Filters } from "./Filters";
+import type { Moodenglink } from "./Moodenglink";
+import type { Node } from "./Node";
+import { Queue } from "./Queue";
+
+export interface PlayOptions {
+	/** A specific track to play instead of pulling from the queue. */
+	track?: Track;
+	/** Start position in ms. */
+	startTime?: number;
+	/** End position in ms. */
+	endTime?: number;
+	/** When true, does not replace the currently playing track. */
+	noReplace?: boolean;
+	/** Pause immediately after starting. */
+	paused?: boolean;
+}
+
+export class Player {
+	public readonly manager: Moodenglink;
+	public node: Node;
+
+	public readonly guild: string;
+	public voiceChannel: string | null;
+	public textChannel: string | null;
+
+	public readonly queue = new Queue();
+	public readonly filters: Filters;
+
+	public volume: number;
+	public position = 0;
+	public ping = 0;
+	public timestamp = 0;
+
+	public playing = false;
+	public paused = false;
+	public connected = false;
+	public state: State = "DISCONNECTED";
+	public repeatMode: RepeatMode = RepeatMode.NONE;
+	public autoplay = false;
+
+	public readonly selfMute: boolean;
+	public readonly selfDeafen: boolean;
+	public readonly data: Record<string, unknown>;
+
+	/** Raw Discord voice state/server used to hand off to Lavalink. */
+	public voiceState: { sessionId?: string; event?: VoiceServer } = {};
+
+	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
+		this.manager = manager;
+		this.node = node;
+		this.guild = options.guild;
+		this.voiceChannel = options.voiceChannel ?? null;
+		this.textChannel = options.textChannel ?? null;
+		this.volume = clamp(options.volume ?? 100, 0, 1000);
+		this.selfMute = options.selfMute ?? false;
+		this.selfDeafen = options.selfDeafen ?? true;
+		this.data = options.data ?? {};
+		this.filters = new Filters(this);
+	}
+
+	/** The track currently playing, if any. */
+	public get current(): Track | null {
+		return this.queue.current;
+	}
+
+	/* ------------------------------ connection ------------------------------ */
+
+	/** Joins the configured voice channel via the Discord gateway. */
+	public connect(): this {
+		if (!this.voiceChannel) throw new Error(`Player "${this.guild}" has no voice channel set.`);
+
+		this.state = "CONNECTING";
+		this.manager.options.send(this.guild, {
+			op: 4,
+			d: {
+				guild_id: this.guild,
+				channel_id: this.voiceChannel,
+				self_mute: this.selfMute,
+				self_deaf: this.selfDeafen,
+			},
+		});
+		this.state = "CONNECTED";
+		this.connected = true;
+		return this;
+	}
+
+	/** Leaves the voice channel but keeps the player and queue alive. */
+	public disconnect(): this {
+		const previous = this.voiceChannel;
+		this.state = "DISCONNECTING";
+		this.manager.options.send(this.guild, {
+			op: 4,
+			d: { guild_id: this.guild, channel_id: null, self_mute: false, self_deaf: false },
+		});
+		this.voiceChannel = null;
+		this.connected = false;
+		this.state = "DISCONNECTED";
+		this.manager.emit("playerDisconnect", this, previous);
+		return this;
+	}
+
+	/** Moves the player to another voice channel. */
+	public setVoiceChannel(channelId: string): this {
+		this.voiceChannel = channelId;
+		this.connect();
+		return this;
+	}
+
+	/** Rebinds the text channel used for informational events. */
+	public setTextChannel(channelId: string): this {
+		this.textChannel = channelId;
+		return this;
+	}
+
+	/** Moves this player (and its playback state) to another node. */
+	public async moveNode(node: Node): Promise<this> {
+		if (node === this.node) return this;
+		const oldNode = this.node;
+		this.state = "MOVING";
+
+		await oldNode.rest.destroyPlayer(this.guild).catch(() => null);
+		this.node = node;
+
+		await this.sendVoiceUpdate();
+		if (this.current) {
+			await this.node.rest.updatePlayer(this.guild, {
+				track: { encoded: this.current.encoded },
+				position: this.position,
+				volume: this.volume,
+				paused: this.paused,
+				filters: this.filters.toJSON(),
+			});
+		}
+
+		this.state = "CONNECTED";
+		this.manager.emit("playerMove", this, oldNode, node);
+		return this;
+	}
+
+	/* ------------------------------- playback ------------------------------- */
+
+	/** Starts playback. With no options, plays the next queued track. */
+	public async play(options: PlayOptions = {}): Promise<this> {
+		const track = options.track ?? this.queue.shift() ?? null;
+		if (!track) throw new Error("Queue is empty — nothing to play.");
+
+		this.queue.current = track;
+
+		const body: UpdatePlayerBody = {
+			track: { encoded: track.encoded, userData: track.userData ?? {} },
+			volume: this.volume,
+		};
+		if (options.startTime !== undefined) body.position = options.startTime;
+		if (options.endTime !== undefined) body.endTime = options.endTime;
+		if (options.paused !== undefined) body.paused = options.paused;
+
+		await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
+
+		this.playing = true;
+		this.paused = options.paused ?? false;
+		this.position = options.startTime ?? 0;
+		await this.save();
+		return this;
+	}
+
+	/** Stops the current track. Pass `false` to keep the queue intact. */
+	public async stop(clearQueue = true): Promise<this> {
+		if (clearQueue) this.queue.clear();
+		await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+		this.playing = false;
+		this.queue.current = null;
+		return this;
+	}
+
+	/** Skips `amount` tracks (default 1) by ending the current track early. */
+	public async skip(amount = 1): Promise<this> {
+		if (amount > 1) this.queue.splice(0, amount - 1);
+		await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+		return this;
+	}
+
+	/** Skips backwards to the previously played track. */
+	public async previous(): Promise<this> {
+		const prev = this.queue.previous.shift();
+		if (!prev) throw new Error("No previous track to play.");
+		if (this.current) this.queue.unshift(this.current);
+		return this.play({ track: prev });
+	}
+
+	public async pause(state = true): Promise<this> {
+		await this.node.rest.updatePlayer(this.guild, { paused: state });
+		this.paused = state;
+		this.playing = !state;
+		return this;
+	}
+
+	public resume(): Promise<this> {
+		return this.pause(false);
+	}
+
+	/** Seeks to `position` ms within the current track. */
+	public async seek(position: number): Promise<this> {
+		if (!this.current) throw new Error("Nothing is playing.");
+		if (!this.current.isSeekable) throw new Error("The current track is not seekable.");
+		const target = clamp(position, 0, this.current.duration);
+		await this.node.rest.updatePlayer(this.guild, { position: target });
+		this.position = target;
+		return this;
+	}
+
+	/** Sets the volume (0-1000). */
+	public async setVolume(volume: number): Promise<this> {
+		this.volume = clamp(volume, 0, 1000);
+		await this.node.rest.updatePlayer(this.guild, { volume: this.volume });
+		this.filters.volume = this.volume / 100;
+		await this.save();
+		return this;
+	}
+
+	/** Sets the repeat mode (`NONE`, `TRACK`, `QUEUE`). */
+	public setRepeatMode(mode: RepeatMode): this {
+		this.repeatMode = mode;
+		return this;
+	}
+
+	/** Toggles autoplay of related tracks when the queue empties. */
+	public setAutoplay(state: boolean): this {
+		this.autoplay = state;
+		return this;
+	}
+
+	/** Destroys the player: leaves voice, tears down the node player, forgets it. */
+	public async destroy(disconnect = true): Promise<void> {
+		this.state = "DESTROYING";
+		if (disconnect) this.disconnect();
+		await this.node.rest.destroyPlayer(this.guild).catch(() => null);
+		if (this.manager.options.store) {
+			await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
+		}
+		this.manager.players.delete(this.guild);
+		this.manager.emit("playerDestroy", this);
+	}
+
+	/* ---------------------------- voice handling ---------------------------- */
+
+	/** @internal Feeds a raw Discord VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE. */
+	public async setVoiceState(sessionId?: string, event?: VoiceServer): Promise<void> {
+		if (sessionId) this.voiceState.sessionId = sessionId;
+		if (event) this.voiceState.event = event;
+
+		if (this.voiceState.sessionId && this.voiceState.event) {
+			await this.sendVoiceUpdate();
+		}
+	}
+
+	private async sendVoiceUpdate(): Promise<void> {
+		const { sessionId, event } = this.voiceState;
+		if (!sessionId || !event) return;
+		await this.node.rest.updatePlayer(this.guild, {
+			voice: { token: event.token, endpoint: event.endpoint, sessionId },
+		});
+	}
+
+	/* --------------------------- internal (Node) --------------------------- */
+
+	/** @internal */
+	public updateState(state: PlayerState): void {
+		this.position = state.position;
+		this.connected = state.connected;
+		this.ping = state.ping;
+		this.timestamp = state.time;
+		this.manager.emit("playerStateUpdate", this);
+	}
+
+	/** @internal */
+	public handleTrackStart(payload: TrackStartEvent): void {
+		this.playing = true;
+		this.paused = false;
+		const track = this.current ?? buildTrack(payload.track);
+		this.manager.emit("trackStart", this, track, payload);
+	}
+
+	/** @internal */
+	public async handleTrackEnd(payload: TrackEndEvent): Promise<void> {
+		const track = this.current ?? buildTrack(payload.track);
+		this.manager.emit("trackEnd", this, track, payload);
+
+		// These reasons should never advance the queue.
+		if (payload.reason === "replaced") return;
+		if (payload.reason === "loadFailed" || payload.reason === "cleanup") {
+			return void this.advance(track, payload);
+		}
+
+		// Repeat handling.
+		if (this.repeatMode === RepeatMode.TRACK && track) {
+			return void this.play({ track });
+		}
+		if (this.repeatMode === RepeatMode.QUEUE && track) {
+			this.queue.push(track);
+		}
+
+		await this.advance(track, payload);
+	}
+
+	private async advance(previous: Track | null, payload: TrackEndEvent): Promise<void> {
+		if (previous) this.queue.previous.unshift(previous);
+		if (this.queue.previous.length > 50) this.queue.previous.length = 50;
+
+		if (this.queue.length > 0) {
+			await this.play().catch((error) => this.manager.emit("nodeError", this.node, error as Error));
+			return;
+		}
+
+		// Autoplay a related track if enabled.
+		if ((this.autoplay || this.manager.options.autoPlay) && previous) {
+			const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
+			if (queued) return;
+		}
+
+		this.playing = false;
+		this.queue.current = null;
+		await this.save();
+		this.manager.emit("queueEnd", this, previous, payload);
+	}
+
+	/** @internal */
+	public handleTrackStuck(payload: TrackStuckEvent): void {
+		const track = this.current ?? buildTrack(payload.track);
+		this.manager.emit("trackStuck", this, track, payload);
+	}
+
+	/** @internal */
+	public handleTrackException(payload: TrackExceptionEvent): void {
+		const track = this.current ?? buildTrack(payload.track);
+		this.manager.emit("trackError", this, track, payload);
+	}
+
+	/** @internal */
+	public handleSocketClosed(payload: WebSocketClosedEvent): void {
+		this.manager.emit("socketClosed", this, payload);
+		// 4006/4009/4014 = session invalid / disconnected — try to rejoin.
+		if ([4006, 4009, 4014].includes(payload.code) && this.voiceChannel) {
+			this.connect();
+		}
+	}
+
+	/* ---------------------------- persistence ---------------------------- */
+
+	/** Serialises the resumable state of this player. */
+	public toJSON(): Record<string, unknown> {
+		return {
+			guild: this.guild,
+			voiceChannel: this.voiceChannel,
+			textChannel: this.textChannel,
+			node: this.node.id,
+			volume: this.volume,
+			position: this.position,
+			paused: this.paused,
+			repeatMode: this.repeatMode,
+			autoplay: this.autoplay,
+			current: this.current,
+			queue: [...this.queue],
+			previous: this.queue.previous,
+			voiceState: this.voiceState,
+			data: this.data,
+		};
+	}
+
+	/** @internal Persists this player to the configured store, if any. */
+	public async save(): Promise<void> {
+		const store = this.manager.options.store;
+		if (!store) return;
+		await Promise.resolve(store.set(`moodenglink:player:${this.guild}`, JSON.stringify(this.toJSON()))).catch(() => null);
+	}
+}

@@ -1,0 +1,247 @@
+# 🎧 Moodenglink
+
+A powerful, modern **Lavalink v4** client for Node.js — inspired by
+[Sonatica](https://github.com/Pastel-Dream/sonatica), [Magmastream](https://github.com/Magmastream-NPM/magmastream),
+[Moonlink.js](https://github.com/Ecliptia/moonlink.js) and [Erela.js](https://github.com/MenuDocs/erela.js).
+
+Written in **TypeScript**, ships with **ESM + CJS + types**, and works with any Discord library
+(discord.js, Eris, oceanic, seyfert…) via a single `send` callback.
+
+## ✨ Features
+
+- **Lavalink v4** REST + WebSocket, session **resuming** on the node side.
+- **Node load balancing** — pluggable sorters (`leastUsedNode`, `leastLoadNode`) or bring your own.
+- **Automatic failover** — migrate players to a healthy node when one dies (`autoMove`).
+- **Player persistence & resume** across restarts via a swappable `store` (Redis, Map, file…).
+- **Queue** with history, repeat modes, shuffle, move, dedupe.
+- **Audio filters** — equalizer presets, nightcore, vaporwave, 8D, karaoke, timescale and more.
+- **Autoplay** of related tracks when the queue ends.
+- **Plugins** — extend the manager Magmastream/Moonlink-style.
+- Fully **typed events**.
+
+## 📦 Install
+
+```bash
+npm install moodenglink
+# peer requirements are bundled: ws, @discordjs/collection
+```
+
+Requires **Node.js ≥ 18** and a running **Lavalink v4** server.
+
+## 🚀 Quick start (discord.js v14)
+
+```ts
+import { Client, GatewayIntentBits } from "discord.js";
+import { Moodenglink } from "moodenglink";
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+});
+
+const manager = new Moodenglink({
+  nodes: [{ host: "localhost", port: 2333, password: "youshallnotpass", identifier: "main" }],
+  defaultSearchPlatform: "youtube",
+  autoPlay: true,
+  // REQUIRED: forward voice payloads to Discord's gateway
+  send: (guildId, payload) => client.guilds.cache.get(guildId)?.shard.send(payload),
+});
+
+// Wire node lifecycle logs
+manager.on("nodeConnect", (node) => console.log(`Node ${node.id} connected`));
+manager.on("trackStart", (player, track) =>
+  console.log(`▶️  ${track.title} in guild ${player.guild}`),
+);
+manager.on("queueEnd", (player) => player.destroy());
+
+// Feed Discord voice updates into Moodenglink
+client.on("raw", (d) => manager.updateVoiceState(d));
+
+client.once("ready", () => manager.init(client.user!.id));
+await client.login(process.env.TOKEN);
+```
+
+### Play a song
+
+```ts
+async function play(guildId: string, voiceChannelId: string, textChannelId: string, query: string) {
+  const player = manager.create({
+    guild: guildId,
+    voiceChannel: voiceChannelId,
+    textChannel: textChannelId,
+    selfDeafen: true,
+  });
+
+  player.connect();
+
+  const res = await manager.search({ query, source: "youtube" }, "requester-id");
+  if (!res.tracks.length) return "No results.";
+
+  if (res.loadType === "playlist") player.queue.add(res.tracks);
+  else player.queue.add(res.tracks[0]);
+
+  if (!player.playing) await player.play();
+  return res.playlist ? `Queued ${res.tracks.length} tracks` : `Queued **${res.tracks[0].title}**`;
+}
+```
+
+## 🧩 API overview
+
+### `new Moodenglink(options)`
+
+| Option                  | Type                                   | Default        | Description                                            |
+| ----------------------- | -------------------------------------- | -------------- | ----------------------------------------------------- |
+| `nodes`                 | `NodeOptions[]`                        | —              | Lavalink nodes to connect to.                         |
+| `send`                  | `(guildId, payload) => void`           | —              | Forwards OP4 voice payloads to Discord. **Required.** |
+| `clientId`              | `string`                               | —              | Bot user id (or pass to `init()`).                    |
+| `shards`                | `number`                               | `1`            | Total shard count.                                    |
+| `autoPlay`              | `boolean`                              | `false`        | Autoplay related tracks when the queue ends.          |
+| `autoMove`              | `boolean`                              | `true`         | Migrate players when a node dies.                     |
+| `autoResume`            | `boolean`                              | `false`        | Restore players from `store` on node ready.           |
+| `defaultSearchPlatform` | `SearchPlatform`                       | `"youtube"`    | Default source for prefix-less queries.               |
+| `trackPartial`          | `(keyof Track)[]`                      | `[]`           | Fields to strip from tracks (never removes `encoded`).|
+| `store`                 | `SessionStore`                         | —              | Backend for persistence/resume (Redis, Map…).         |
+| `sorter`                | `(nodes) => Collection<string, Node>`  | `leastUsedNode`| Node ordering strategy.                               |
+
+### Manager methods
+
+- `init(clientId?)` — connect all nodes.
+- `create(options)` / `get(guild)` / `destroy(guild)` — player lifecycle.
+- `search(query, requester?)` — resolve a string or `{ query, source }`.
+- `decodeTrack(encoded)` / `resolve(unresolved)`.
+- `addNode(options)` — hot-add a node.
+- `use(plugin)` — register a plugin.
+- `updateVoiceState(packet)` — feed raw Discord voice packets.
+- `idealNode` — best node per the sorter.
+
+### Player methods
+
+`connect()` · `disconnect()` · `play()` · `stop()` · `skip(n)` · `previous()` · `pause()` ·
+`resume()` · `seek(ms)` · `setVolume(0-1000)` · `setRepeatMode(mode)` · `setAutoplay(bool)` ·
+`setVoiceChannel(id)` · `setTextChannel(id)` · `moveNode(node)` · `destroy()`
+
+### Queue
+
+```ts
+player.queue.add(track);        // or an array
+player.queue.shuffle();
+player.queue.move(from, to);
+player.queue.remove(index);
+player.queue.dedupe();
+player.queue.previous;          // history
+player.queue.current;           // now playing
+player.queue.duration;          // total ms
+```
+
+### Repeat modes
+
+```ts
+import { RepeatMode } from "moodenglink";
+player.setRepeatMode(RepeatMode.TRACK); // NONE | TRACK | QUEUE
+```
+
+## 🎚️ Filters
+
+```ts
+// One-shot presets
+await player.filters.nightcore();
+await player.filters.bassboost();
+await player.filters.eightD();
+await player.filters.vaporwave();
+
+// Manual, chainable — call apply() to push to the node
+await player.filters
+  .setPreset("rock")
+  .setTimescale({ speed: 1.1, pitch: 1.0, rate: 1.0 })
+  .setKaraoke({ level: 1.0 })
+  .apply();
+
+await player.filters.clear();
+```
+
+Equalizer presets: `flat`, `bass`, `soft`, `treble`, `pop`, `party`, `rock`, `electronic`, `radio`.
+
+## ⚖️ Load balancing & failover
+
+```ts
+import { Moodenglink, leastLoadNode } from "moodenglink";
+
+const manager = new Moodenglink({
+  nodes: [
+    { host: "eu-1", port: 2333, password: "…", priority: 10 },
+    { host: "eu-2", port: 2333, password: "…", priority: 5 },
+  ],
+  sorter: leastLoadNode, // pick the node with the lowest CPU load
+  autoMove: true,        // move players off a node that runs out of retries
+  send,
+});
+```
+
+## 💾 Session resume & persistence
+
+Provide any `store` implementing `get/set/delete/keys`. Players are serialised on state
+changes and restored when a node reconnects (`autoResume: true`).
+
+```ts
+const memory = new Map<string, string>();
+const manager = new Moodenglink({
+  nodes,
+  autoResume: true,
+  store: {
+    get: (k) => memory.get(k) ?? null,
+    set: (k, v) => memory.set(k, v),
+    delete: (k) => memory.delete(k),
+    keys: () => [...memory.keys()],
+  },
+  send,
+});
+```
+
+Swap the `Map` for `ioredis` (`get`/`set`/`del`/`keys`) to survive full restarts.
+
+## 🔌 Plugins
+
+```ts
+import { Plugin, Moodenglink } from "moodenglink";
+
+class MyPlugin extends Plugin {
+  readonly name = "my-plugin";
+  load(manager: Moodenglink) {
+    manager.on("trackStart", (player, track) => {
+      // custom behaviour
+    });
+  }
+}
+
+manager.use(new MyPlugin());
+```
+
+## 📡 Events
+
+| Event                                    | Payload                                   |
+| ---------------------------------------- | ----------------------------------------- |
+| `nodeCreate` / `nodeConnect` / `nodeReconnect` / `nodeDisconnect` / `nodeError` / `nodeDestroy` / `nodeStats` / `nodeRaw` | node lifecycle |
+| `playerCreate` / `playerDestroy` / `playerMove` / `playerDisconnect` / `playerStateUpdate` | player lifecycle |
+| `trackStart` / `trackEnd` / `trackStuck` / `trackError` | `(player, track, payload)` |
+| `queueEnd`                               | `(player, lastTrack, payload)`            |
+| `socketClosed`                           | `(player, payload)`                       |
+| `raw` / `debug`                          | low-level diagnostics                     |
+
+## 🔎 Search platforms
+
+`youtube`, `youtubemusic`, `soundcloud`, `spotify`, `deezer`, `applemusic`, `yandexmusic`,
+`flowerytts`, `bandcamp`, `vimeo`, `twitch`, `http`, `local`.
+
+> Platforms beyond YouTube/SoundCloud require the matching Lavalink source plugin
+> (e.g. LavaSrc for Spotify/Apple/Deezer).
+
+## 🛠️ Building from source
+
+```bash
+npm install
+npm run build     # dist/ (cjs + esm + d.ts)
+npm run format
+```
+
+## 📄 License
+
+MIT © Moodeng Lab. Built on the shoulders of Sonatica, Magmastream, Moonlink.js and Erela.js.

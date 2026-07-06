@@ -1,0 +1,53 @@
+{
+  "name": "moodenglink",
+  "version": "1.0.0",
+  "description": "A powerful, modern Lavalink v4 client for Node.js — inspired by Sonatica, Magmastream, Moonlink.js and Erela.js.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "build:tsc": "tsc",
+    "dev": "tsup --watch",
+    "lint": "prettier --check \"src/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "lavalink",
+    "lavalink-client",
+    "discord",
+    "music",
+    "moodeng",
+    "moodenglink",
+    "audio",
+    "player",
+    "v4"
+  ],
+  "author": "Moodeng Lab",
+  "license": "MIT",
+  "dependencies": {
+    "@discordjs/collection": "^2.1.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "prettier": "^3.3.3",
+    "tsup": "^8.2.4",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
