@@ -56,6 +56,22 @@ export class Filters {
 		return this;
 	}
 
+	/** Merges a partial filter payload into the current state and applies it. */
+	public async set(payload: FilterPayload): Promise<this> {
+		if (payload.volume !== undefined) this.volume = payload.volume;
+		if (payload.equalizer !== undefined) this.equalizer = payload.equalizer;
+		if (payload.karaoke !== undefined) this.karaoke = payload.karaoke;
+		if (payload.timescale !== undefined) this.timescale = payload.timescale;
+		if (payload.tremolo !== undefined) this.tremolo = payload.tremolo;
+		if (payload.vibrato !== undefined) this.vibrato = payload.vibrato;
+		if (payload.rotation !== undefined) this.rotation = payload.rotation;
+		if (payload.distortion !== undefined) this.distortion = payload.distortion;
+		if (payload.channelMix !== undefined) this.channelMix = payload.channelMix;
+		if (payload.lowPass !== undefined) this.lowPass = payload.lowPass;
+		if (payload.pluginFilters !== undefined) this.pluginFilters = payload.pluginFilters;
+		return this.apply();
+	}
+
 	/* ------------------------------- setters ------------------------------- */
 
 	public setEqualizer(bands: Band[]): this {

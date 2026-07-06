@@ -15,6 +15,8 @@ export { Queue } from "./classes/Queue";
 export { Rest, RestError } from "./classes/Rest";
 export { Filters } from "./classes/Filters";
 export { Plugin } from "./classes/Plugin";
+export { MemoryStore, RedisStore } from "./classes/stores";
+export type { RedisLike } from "./classes/stores";
 
 // Sorters (load balancing strategies)
 export { default as leastLoadNode } from "./sorter/leastLoadNode";

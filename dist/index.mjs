@@ -530,6 +530,21 @@ var Filters = class {
     await this.player.node.rest.updatePlayer(this.player.guild, { filters: this.toJSON() });
     return this;
   }
+  /** Merges a partial filter payload into the current state and applies it. */
+  async set(payload) {
+    if (payload.volume !== void 0) this.volume = payload.volume;
+    if (payload.equalizer !== void 0) this.equalizer = payload.equalizer;
+    if (payload.karaoke !== void 0) this.karaoke = payload.karaoke;
+    if (payload.timescale !== void 0) this.timescale = payload.timescale;
+    if (payload.tremolo !== void 0) this.tremolo = payload.tremolo;
+    if (payload.vibrato !== void 0) this.vibrato = payload.vibrato;
+    if (payload.rotation !== void 0) this.rotation = payload.rotation;
+    if (payload.distortion !== void 0) this.distortion = payload.distortion;
+    if (payload.channelMix !== void 0) this.channelMix = payload.channelMix;
+    if (payload.lowPass !== void 0) this.lowPass = payload.lowPass;
+    if (payload.pluginFilters !== void 0) this.pluginFilters = payload.pluginFilters;
+    return this.apply();
+  }
   /* ------------------------------- setters ------------------------------- */
   setEqualizer(bands2) {
     this.equalizer = bands2;
@@ -1247,6 +1262,44 @@ var Plugin = class {
   }
 };
 
+// src/classes/stores.ts
+var MemoryStore = class {
+  constructor() {
+    this.map = /* @__PURE__ */ new Map();
+  }
+  get(key) {
+    return this.map.get(key) ?? null;
+  }
+  set(key, value) {
+    this.map.set(key, value);
+  }
+  delete(key) {
+    this.map.delete(key);
+  }
+  keys() {
+    return [...this.map.keys()];
+  }
+};
+var RedisStore = class {
+  constructor(redis, prefix = "") {
+    this.redis = redis;
+    this.prefix = prefix;
+  }
+  get(key) {
+    return this.redis.get(this.prefix + key);
+  }
+  set(key, value) {
+    return this.redis.set(this.prefix + key, value);
+  }
+  delete(key) {
+    return this.redis.del(this.prefix + key);
+  }
+  async keys() {
+    const keys = await this.redis.keys(`${this.prefix}moodenglink:player:*`);
+    return this.prefix ? keys.map((k) => k.slice(this.prefix.length)) : keys;
+  }
+};
+
 // src/sorter/leastLoadNode.ts
 function leastLoadNode(nodes) {
   return nodes.filter((node) => node.connected).sort((a, b) => a.penalties - b.penalties);
@@ -1259,12 +1312,14 @@ export {
   EventTypes,
   Filters,
   Moodenglink as Manager,
+  MemoryStore,
   Moodenglink,
   Node,
   OpCodes,
   Player,
   Plugin,
   Queue,
+  RedisStore,
   RepeatMode,
   Rest,
   RestError,

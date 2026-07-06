@@ -159,6 +159,9 @@ await player.filters
   .setKaraoke({ level: 1.0 })
   .apply();
 
+// Merge a partial payload and apply in one call
+await player.filters.set({ timescale: { speed: 1.15 }, lowPass: { smoothing: 20 } });
+
 await player.filters.clear();
 ```
 
@@ -214,25 +217,21 @@ players, CPU system load and dropped/nulled audio frames, biased by each node's
 
 ## 💾 Session resume & persistence
 
-Provide any `store` implementing `get/set/delete/keys`. Players are serialised on state
-changes and restored when a node reconnects (`autoResume: true`).
+Players are serialised on state changes and restored when a node reconnects
+(`autoResume: true`). Ship-with-batteries adapters are included:
 
 ```ts
-const memory = new Map<string, string>();
-const manager = new Moodenglink({
-  nodes,
-  autoResume: true,
-  store: {
-    get: (k) => memory.get(k) ?? null,
-    set: (k, v) => memory.set(k, v),
-    delete: (k) => memory.delete(k),
-    keys: () => [...memory.keys()],
-  },
-  send,
-});
+import { Moodenglink, MemoryStore, RedisStore } from "moodenglink";
+
+// Single instance — in-memory
+const manager = new Moodenglink({ nodes, autoResume: true, store: new MemoryStore(), send });
+
+// Survive full restarts — Redis (ioredis or node-redis v4)
+import Redis from "ioredis";
+const manager2 = new Moodenglink({ nodes, autoResume: true, store: new RedisStore(new Redis()), send });
 ```
 
-Swap the `Map` for `ioredis` (`get`/`set`/`del`/`keys`) to survive full restarts.
+Or bring your own by implementing the `SessionStore` interface (`get/set/delete/keys`).
 
 ## 🔌 Plugins
 

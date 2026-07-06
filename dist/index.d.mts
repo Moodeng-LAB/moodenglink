@@ -585,6 +585,8 @@ declare class Filters {
     toJSON(): FilterPayload;
     /** Pushes the current filter state to the node. Chainable. */
     apply(): Promise<this>;
+    /** Merges a partial filter payload into the current state and applies it. */
+    set(payload: FilterPayload): Promise<this>;
     setEqualizer(bands: Band[]): this;
     /** Applies a named equalizer preset (`bass`, `pop`, `rock`, ...). */
     setPreset(preset: EqualizerPreset): this;
@@ -920,6 +922,48 @@ declare class Moodenglink extends EventEmitter {
 }
 
 /**
+ * Ready-made {@link SessionStore} backends for player persistence & resuming.
+ * @module classes/stores
+ */
+
+/** An in-process, `Map`-backed store. Great for a single-instance bot. */
+declare class MemoryStore implements SessionStore {
+    private readonly map;
+    get(key: string): string | null;
+    set(key: string, value: string): void;
+    delete(key: string): void;
+    keys(): string[];
+}
+/**
+ * The minimal client shape {@link RedisStore} needs — satisfied by both
+ * `ioredis` and `redis` (v4) clients.
+ */
+interface RedisLike {
+    get(key: string): Promise<string | null>;
+    set(key: string, value: string): Promise<unknown>;
+    del(key: string): Promise<unknown>;
+    keys(pattern: string): Promise<string[]>;
+}
+/**
+ * A Redis-backed store that survives full process restarts. Pass an existing
+ * `ioredis` / `redis` client; an optional key `prefix` namespaces the data.
+ *
+ * ```ts
+ * import Redis from "ioredis";
+ * const manager = new Moodenglink({ nodes, autoResume: true, store: new RedisStore(new Redis()), send });
+ * ```
+ */
+declare class RedisStore implements SessionStore {
+    private readonly redis;
+    private readonly prefix;
+    constructor(redis: RedisLike, prefix?: string);
+    get(key: string): Promise<string | null>;
+    set(key: string, value: string): Promise<unknown>;
+    delete(key: string): Promise<unknown>;
+    keys(): Promise<string[]>;
+}
+
+/**
  * Sorts connected nodes by lowest CPU load (Lavalink-weighted).
  * @module sorter/leastLoadNode
  */
@@ -979,4 +1023,4 @@ declare class TTLCache<K, V> {
 
 declare const version = "1.0.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type ReadyPayload, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUrl, leastLoadNode, leastUsedNode, partialTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUrl, leastLoadNode, leastUsedNode, partialTrack, shuffleArray, sleep, version };

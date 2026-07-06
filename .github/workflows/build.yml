@@ -1,0 +1,60 @@
+name: Build & Commit dist
+
+on:
+  push:
+    branches: [main]
+    # Only run when the sources that affect the build change — a dist-only
+    # commit from this workflow won't retrigger it.
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "tsup.config.ts"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "src/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # Commit the refreshed dist back to main (skipped on PRs and when nothing changed).
+      - name: Commit dist
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist
+          if git diff --staged --quiet; then
+            echo "dist is already up to date."
+          else
+            git commit -m "build: update dist [skip ci]"
+            git push
+          fi
