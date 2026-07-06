@@ -15,10 +15,11 @@ import type { PlayerOptions, State, Track, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
 import type { UpdatePlayerBody } from "../types/Rest";
 import { buildTrack, clamp } from "../utils/utils";
-import { Filters } from "./Filters";
+import type { Filters } from "./Filters";
 import type { Moodenglink } from "./Moodenglink";
 import type { Node } from "./Node";
-import { Queue } from "./Queue";
+import type { Queue } from "./Queue";
+import { Structure } from "./Structure";
 
 export interface PlayOptions {
 	/** A specific track to play instead of pulling from the queue. */
@@ -41,7 +42,7 @@ export class Player {
 	public voiceChannel: string | null;
 	public textChannel: string | null;
 
-	public readonly queue = new Queue();
+	public readonly queue: Queue;
 	public readonly filters: Filters;
 
 	public volume: number;
@@ -73,7 +74,8 @@ export class Player {
 		this.selfMute = options.selfMute ?? false;
 		this.selfDeafen = options.selfDeafen ?? true;
 		this.data = options.data ?? {};
-		this.filters = new Filters(this);
+		this.queue = new (Structure.get("Queue"))();
+		this.filters = new (Structure.get("Filters"))(this);
 	}
 
 	/** The track currently playing, if any. */

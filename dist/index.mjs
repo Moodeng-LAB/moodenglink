@@ -132,6 +132,153 @@ function shuffleArray(array) {
   return array;
 }
 
+// src/utils/equalizers.ts
+var bands = (gains) => gains.map((gain, band) => ({ band, gain }));
+var Equalizers = {
+  flat: bands(new Array(15).fill(0)),
+  bass: bands([0.6, 0.67, 0.67, 0.4, 0.2, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+  soft: bands([0, 0, 0, 0, 0, 0, 0, 0, -0.25, -0.25, -0.25, -0.25, -0.25, -0.25, -0.25]),
+  treble: bands([-0.1, -0.12, -0.12, -0.12, -0.08, -0.04, 0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.4, 0.4, 0.4]),
+  pop: bands([-0.02, -0.01, 0.08, 0.1, 0.15, 0.1, 0.03, -0.02, -0.035, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05]),
+  party: bands([0.1, 0.1, 0.05, 0.05, 0.02, 0, 0, 0, 0, 0, 0, 0.02, 0.05, 0.05, 0.1]),
+  rock: bands([0.3, 0.25, 0.2, 0.1, 0.05, -0.05, -0.15, -0.2, -0.1, -0.05, 0.05, 0.1, 0.2, 0.25, 0.3]),
+  electronic: bands([0.375, 0.35, 0.125, 0, 0, -0.125, -0.125, 0, 0.25, 0.125, 0.15, 0.2, 0.25, 0.35, 0.4]),
+  // Lavalink accepts band gains in the range -0.25 … 1.0.
+  radio: bands([0.65, 0.45, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0, -0.05, -0.1, -0.15, -0.2, -0.25, -0.25])
+};
+
+// src/classes/Filters.ts
+var Filters = class {
+  constructor(player) {
+    this.player = player;
+    this.volume = 1;
+    this.equalizer = [];
+    this.karaoke = null;
+    this.timescale = null;
+    this.tremolo = null;
+    this.vibrato = null;
+    this.rotation = null;
+    this.distortion = null;
+    this.channelMix = null;
+    this.lowPass = null;
+    this.pluginFilters = {};
+  }
+  /** Serialises the current filter state into a Lavalink filters payload. */
+  toJSON() {
+    return {
+      volume: this.volume,
+      equalizer: this.equalizer,
+      karaoke: this.karaoke,
+      timescale: this.timescale,
+      tremolo: this.tremolo,
+      vibrato: this.vibrato,
+      rotation: this.rotation,
+      distortion: this.distortion,
+      channelMix: this.channelMix,
+      lowPass: this.lowPass,
+      pluginFilters: this.pluginFilters
+    };
+  }
+  /** Pushes the current filter state to the node. Chainable. */
+  async apply() {
+    await this.player.node.rest.updatePlayer(this.player.guild, { filters: this.toJSON() });
+    return this;
+  }
+  /** Merges a partial filter payload into the current state and applies it. */
+  async set(payload) {
+    if (payload.volume !== void 0) this.volume = payload.volume;
+    if (payload.equalizer !== void 0) this.equalizer = payload.equalizer;
+    if (payload.karaoke !== void 0) this.karaoke = payload.karaoke;
+    if (payload.timescale !== void 0) this.timescale = payload.timescale;
+    if (payload.tremolo !== void 0) this.tremolo = payload.tremolo;
+    if (payload.vibrato !== void 0) this.vibrato = payload.vibrato;
+    if (payload.rotation !== void 0) this.rotation = payload.rotation;
+    if (payload.distortion !== void 0) this.distortion = payload.distortion;
+    if (payload.channelMix !== void 0) this.channelMix = payload.channelMix;
+    if (payload.lowPass !== void 0) this.lowPass = payload.lowPass;
+    if (payload.pluginFilters !== void 0) this.pluginFilters = payload.pluginFilters;
+    return this.apply();
+  }
+  /* ------------------------------- setters ------------------------------- */
+  setEqualizer(bands2) {
+    this.equalizer = bands2;
+    return this;
+  }
+  /** Applies a named equalizer preset (`bass`, `pop`, `rock`, ...). */
+  setPreset(preset) {
+    this.equalizer = Equalizers[preset];
+    return this;
+  }
+  setKaraoke(settings) {
+    this.karaoke = settings;
+    return this;
+  }
+  setTimescale(settings) {
+    this.timescale = settings;
+    return this;
+  }
+  setTremolo(settings) {
+    this.tremolo = settings;
+    return this;
+  }
+  setVibrato(settings) {
+    this.vibrato = settings;
+    return this;
+  }
+  setRotation(settings) {
+    this.rotation = settings;
+    return this;
+  }
+  setDistortion(settings) {
+    this.distortion = settings;
+    return this;
+  }
+  setChannelMix(settings) {
+    this.channelMix = settings;
+    return this;
+  }
+  setLowPass(settings) {
+    this.lowPass = settings;
+    return this;
+  }
+  /** Sets a plugin-specific filter (e.g. lavalink plugins). */
+  setPluginFilter(name, value) {
+    this.pluginFilters[name] = value;
+    return this;
+  }
+  /* --------------------------- one-shot presets --------------------------- */
+  bassboost() {
+    return this.setPreset("bass").apply();
+  }
+  nightcore() {
+    return this.setTimescale({ speed: 1.2, pitch: 1.2, rate: 1 }).apply();
+  }
+  vaporwave() {
+    return this.setTimescale({ speed: 0.8, pitch: 0.8, rate: 1 }).apply();
+  }
+  eightD() {
+    return this.setRotation({ rotationHz: 0.2 }).apply();
+  }
+  tremoloPreset() {
+    return this.setTremolo({ frequency: 4, depth: 0.75 }).apply();
+  }
+  /** Clears every filter and applies the reset. */
+  async clear() {
+    this.volume = 1;
+    this.equalizer = [];
+    this.karaoke = null;
+    this.timescale = null;
+    this.tremolo = null;
+    this.vibrato = null;
+    this.rotation = null;
+    this.distortion = null;
+    this.channelMix = null;
+    this.lowPass = null;
+    this.pluginFilters = {};
+    return this.apply();
+  }
+};
+
 // src/classes/Node.ts
 import WebSocket from "ws";
 
@@ -479,224 +626,9 @@ var RepeatMode = /* @__PURE__ */ ((RepeatMode2) => {
   return RepeatMode2;
 })(RepeatMode || {});
 
-// src/utils/equalizers.ts
-var bands = (gains) => gains.map((gain, band) => ({ band, gain }));
-var Equalizers = {
-  flat: bands(new Array(15).fill(0)),
-  bass: bands([0.6, 0.67, 0.67, 0.4, 0.2, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-  soft: bands([0, 0, 0, 0, 0, 0, 0, 0, -0.25, -0.25, -0.25, -0.25, -0.25, -0.25, -0.25]),
-  treble: bands([-0.1, -0.12, -0.12, -0.12, -0.08, -0.04, 0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.4, 0.4, 0.4]),
-  pop: bands([-0.02, -0.01, 0.08, 0.1, 0.15, 0.1, 0.03, -0.02, -0.035, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05]),
-  party: bands([0.1, 0.1, 0.05, 0.05, 0.02, 0, 0, 0, 0, 0, 0, 0.02, 0.05, 0.05, 0.1]),
-  rock: bands([0.3, 0.25, 0.2, 0.1, 0.05, -0.05, -0.15, -0.2, -0.1, -0.05, 0.05, 0.1, 0.2, 0.25, 0.3]),
-  electronic: bands([0.375, 0.35, 0.125, 0, 0, -0.125, -0.125, 0, 0.25, 0.125, 0.15, 0.2, 0.25, 0.35, 0.4]),
-  // Lavalink accepts band gains in the range -0.25 … 1.0.
-  radio: bands([0.65, 0.45, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0, -0.05, -0.1, -0.15, -0.2, -0.25, -0.25])
-};
-
-// src/classes/Filters.ts
-var Filters = class {
-  constructor(player) {
-    this.player = player;
-    this.volume = 1;
-    this.equalizer = [];
-    this.karaoke = null;
-    this.timescale = null;
-    this.tremolo = null;
-    this.vibrato = null;
-    this.rotation = null;
-    this.distortion = null;
-    this.channelMix = null;
-    this.lowPass = null;
-    this.pluginFilters = {};
-  }
-  /** Serialises the current filter state into a Lavalink filters payload. */
-  toJSON() {
-    return {
-      volume: this.volume,
-      equalizer: this.equalizer,
-      karaoke: this.karaoke,
-      timescale: this.timescale,
-      tremolo: this.tremolo,
-      vibrato: this.vibrato,
-      rotation: this.rotation,
-      distortion: this.distortion,
-      channelMix: this.channelMix,
-      lowPass: this.lowPass,
-      pluginFilters: this.pluginFilters
-    };
-  }
-  /** Pushes the current filter state to the node. Chainable. */
-  async apply() {
-    await this.player.node.rest.updatePlayer(this.player.guild, { filters: this.toJSON() });
-    return this;
-  }
-  /** Merges a partial filter payload into the current state and applies it. */
-  async set(payload) {
-    if (payload.volume !== void 0) this.volume = payload.volume;
-    if (payload.equalizer !== void 0) this.equalizer = payload.equalizer;
-    if (payload.karaoke !== void 0) this.karaoke = payload.karaoke;
-    if (payload.timescale !== void 0) this.timescale = payload.timescale;
-    if (payload.tremolo !== void 0) this.tremolo = payload.tremolo;
-    if (payload.vibrato !== void 0) this.vibrato = payload.vibrato;
-    if (payload.rotation !== void 0) this.rotation = payload.rotation;
-    if (payload.distortion !== void 0) this.distortion = payload.distortion;
-    if (payload.channelMix !== void 0) this.channelMix = payload.channelMix;
-    if (payload.lowPass !== void 0) this.lowPass = payload.lowPass;
-    if (payload.pluginFilters !== void 0) this.pluginFilters = payload.pluginFilters;
-    return this.apply();
-  }
-  /* ------------------------------- setters ------------------------------- */
-  setEqualizer(bands2) {
-    this.equalizer = bands2;
-    return this;
-  }
-  /** Applies a named equalizer preset (`bass`, `pop`, `rock`, ...). */
-  setPreset(preset) {
-    this.equalizer = Equalizers[preset];
-    return this;
-  }
-  setKaraoke(settings) {
-    this.karaoke = settings;
-    return this;
-  }
-  setTimescale(settings) {
-    this.timescale = settings;
-    return this;
-  }
-  setTremolo(settings) {
-    this.tremolo = settings;
-    return this;
-  }
-  setVibrato(settings) {
-    this.vibrato = settings;
-    return this;
-  }
-  setRotation(settings) {
-    this.rotation = settings;
-    return this;
-  }
-  setDistortion(settings) {
-    this.distortion = settings;
-    return this;
-  }
-  setChannelMix(settings) {
-    this.channelMix = settings;
-    return this;
-  }
-  setLowPass(settings) {
-    this.lowPass = settings;
-    return this;
-  }
-  /** Sets a plugin-specific filter (e.g. lavalink plugins). */
-  setPluginFilter(name, value) {
-    this.pluginFilters[name] = value;
-    return this;
-  }
-  /* --------------------------- one-shot presets --------------------------- */
-  bassboost() {
-    return this.setPreset("bass").apply();
-  }
-  nightcore() {
-    return this.setTimescale({ speed: 1.2, pitch: 1.2, rate: 1 }).apply();
-  }
-  vaporwave() {
-    return this.setTimescale({ speed: 0.8, pitch: 0.8, rate: 1 }).apply();
-  }
-  eightD() {
-    return this.setRotation({ rotationHz: 0.2 }).apply();
-  }
-  tremoloPreset() {
-    return this.setTremolo({ frequency: 4, depth: 0.75 }).apply();
-  }
-  /** Clears every filter and applies the reset. */
-  async clear() {
-    this.volume = 1;
-    this.equalizer = [];
-    this.karaoke = null;
-    this.timescale = null;
-    this.tremolo = null;
-    this.vibrato = null;
-    this.rotation = null;
-    this.distortion = null;
-    this.channelMix = null;
-    this.lowPass = null;
-    this.pluginFilters = {};
-    return this.apply();
-  }
-};
-
-// src/classes/Queue.ts
-var Queue = class extends Array {
-  constructor() {
-    super(...arguments);
-    /** The track that is currently playing (or was, once it ends). */
-    this.current = null;
-    /** Previously played tracks, most-recent-first. */
-    this.previous = [];
-  }
-  // Derived operations (map/filter/slice/splice) return plain arrays instead of
-  // Queue instances — otherwise they'd carry this class's `current`/`previous`
-  // fields and leak them into results.
-  static get [Symbol.species]() {
-    return Array;
-  }
-  /** Total duration of the queue (excluding the current track), in ms. */
-  get duration() {
-    return this.reduce((acc, track) => acc + (track.duration || 0), 0);
-  }
-  /** Total number of upcoming tracks. */
-  get size() {
-    return this.length;
-  }
-  /** Whether there are no upcoming tracks. */
-  get isEmpty() {
-    return this.length === 0;
-  }
-  /** Adds one or more tracks to the end of the queue, or at `offset`. */
-  add(track, offset) {
-    const tracks = Array.isArray(track) ? track : [track];
-    if (offset === void 0 || offset >= this.length) this.push(...tracks);
-    else this.splice(offset, 0, ...tracks);
-    return this;
-  }
-  /** Removes and returns tracks. `remove(index)` or `remove(start, end)`. */
-  remove(start = 0, end) {
-    if (end === void 0) return this.splice(start, 1);
-    return this.splice(start, end - start);
-  }
-  /** Empties all upcoming tracks. */
-  clear() {
-    this.length = 0;
-  }
-  /** Shuffles the upcoming tracks in place. */
-  shuffle() {
-    shuffleArray(this);
-  }
-  /** Moves a track from one position to another. */
-  move(from, to) {
-    if (from < 0 || from >= this.length) return;
-    const [track] = this.splice(from, 1);
-    this.splice(to, 0, track);
-  }
-  /** Removes duplicate tracks by encoded string, keeping the first occurrence. */
-  dedupe() {
-    const seen = /* @__PURE__ */ new Set();
-    for (let i = 0; i < this.length; i++) {
-      if (seen.has(this[i].encoded)) {
-        this.splice(i, 1);
-        i--;
-      } else {
-        seen.add(this[i].encoded);
-      }
-    }
-  }
-};
-
 // src/classes/Player.ts
 var Player = class {
   constructor(manager, options, node) {
-    this.queue = new Queue();
     this.position = 0;
     this.ping = 0;
     this.timestamp = 0;
@@ -717,7 +649,8 @@ var Player = class {
     this.selfMute = options.selfMute ?? false;
     this.selfDeafen = options.selfDeafen ?? true;
     this.data = options.data ?? {};
-    this.filters = new Filters(this);
+    this.queue = new (Structure.get("Queue"))();
+    this.filters = new (Structure.get("Filters"))(this);
   }
   /** The track currently playing, if any. */
   get current() {
@@ -1012,6 +945,98 @@ var Player = class {
   }
 };
 
+// src/classes/Queue.ts
+var Queue = class extends Array {
+  constructor() {
+    super(...arguments);
+    /** The track that is currently playing (or was, once it ends). */
+    this.current = null;
+    /** Previously played tracks, most-recent-first. */
+    this.previous = [];
+  }
+  // Derived operations (map/filter/slice/splice) return plain arrays instead of
+  // Queue instances — otherwise they'd carry this class's `current`/`previous`
+  // fields and leak them into results.
+  static get [Symbol.species]() {
+    return Array;
+  }
+  /** Total duration of the queue (excluding the current track), in ms. */
+  get duration() {
+    return this.reduce((acc, track) => acc + (track.duration || 0), 0);
+  }
+  /** Total number of upcoming tracks. */
+  get size() {
+    return this.length;
+  }
+  /** Whether there are no upcoming tracks. */
+  get isEmpty() {
+    return this.length === 0;
+  }
+  /** Adds one or more tracks to the end of the queue, or at `offset`. */
+  add(track, offset) {
+    const tracks = Array.isArray(track) ? track : [track];
+    if (offset === void 0 || offset >= this.length) this.push(...tracks);
+    else this.splice(offset, 0, ...tracks);
+    return this;
+  }
+  /** Removes and returns tracks. `remove(index)` or `remove(start, end)`. */
+  remove(start = 0, end) {
+    if (end === void 0) return this.splice(start, 1);
+    return this.splice(start, end - start);
+  }
+  /** Empties all upcoming tracks. */
+  clear() {
+    this.length = 0;
+  }
+  /** Shuffles the upcoming tracks in place. */
+  shuffle() {
+    shuffleArray(this);
+  }
+  /** Moves a track from one position to another. */
+  move(from, to) {
+    if (from < 0 || from >= this.length) return;
+    const [track] = this.splice(from, 1);
+    this.splice(to, 0, track);
+  }
+  /** Removes duplicate tracks by encoded string, keeping the first occurrence. */
+  dedupe() {
+    const seen = /* @__PURE__ */ new Set();
+    for (let i = 0; i < this.length; i++) {
+      if (seen.has(this[i].encoded)) {
+        this.splice(i, 1);
+        i--;
+      } else {
+        seen.add(this[i].encoded);
+      }
+    }
+  }
+};
+
+// src/classes/Structure.ts
+var registry = /* @__PURE__ */ new Map();
+function baseFor(name) {
+  const defaults = { Player, Queue, Node, Filters };
+  return defaults[name];
+}
+var Structure = class _Structure {
+  /** Replaces a structure with a subclass produced by `extender`. */
+  static extend(name, extender) {
+    const extended = extender(_Structure.get(name));
+    registry.set(name, extended);
+    return extended;
+  }
+  /** Returns the (possibly extended) constructor registered for `name`. */
+  static get(name) {
+    if (!registry.has(name)) registry.set(name, baseFor(name));
+    return registry.get(name);
+  }
+  /** Resets a structure back to its built-in implementation (mostly for tests). */
+  static reset(name) {
+    if (name) registry.delete(name);
+    else registry.clear();
+  }
+};
+
 // src/classes/Moodenglink.ts
 var Moodenglink = class extends EventEmitter {
   constructor(options) {
@@ -1039,7 +1064,7 @@ var Moodenglink = class extends EventEmitter {
       this.searchCache = null;
     }
     for (const nodeOptions of this.options.nodes) {
-      const node = new Node(this, nodeOptions);
+      const node = new (Structure.get("Node"))(this, nodeOptions);
       this.nodes.set(node.id, node);
       this.emit("nodeCreate", node);
     }
@@ -1060,7 +1085,7 @@ var Moodenglink = class extends EventEmitter {
   /* ------------------------------- nodes ------------------------------- */
   /** Adds and connects a node at runtime. */
   addNode(options) {
-    const node = new Node(this, options);
+    const node = new (Structure.get("Node"))(this, options);
     this.nodes.set(node.id, node);
     this.emit("nodeCreate", node);
     if (this.initialized) node.connect();
@@ -1087,7 +1112,7 @@ var Moodenglink = class extends EventEmitter {
     const existing = this.players.get(options.guild);
     if (existing) return existing;
     const node = options.node ? this.nodes.get(options.node) : void 0;
-    const player = new Player(this, options, node?.connected ? node : this.idealNode);
+    const player = new (Structure.get("Player"))(this, options, node?.connected ? node : this.idealNode);
     this.players.set(options.guild, player);
     this.emit("playerCreate", player);
     return player;
@@ -1335,6 +1360,7 @@ export {
   Rest,
   RestError,
   SearchPrefixes,
+  Structure,
   TTLCache,
   buildSearchIdentifier,
   buildTrack,

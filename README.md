@@ -250,6 +250,31 @@ class MyPlugin extends Plugin {
 manager.use(new MyPlugin());
 ```
 
+## 🧬 Extending structures
+
+Swap in your own subclasses — the manager will instantiate them everywhere:
+
+```ts
+import { Structure } from "moodenglink";
+
+Structure.extend("Player", (Player) => class extends Player {
+  async announceAndPlay() {
+    await this.play();
+    console.log("Now playing:", this.current?.title);
+  }
+});
+
+Structure.extend("Queue", (Queue) => class extends Queue {
+  get totalPretty() {
+    return this.length + " tracks";
+  }
+});
+
+// manager.create(...) now returns your extended Player, with an extended queue.
+```
+
+Extendable: `Player`, `Queue`, `Node`, `Filters`.
+
 ## 📡 Events
 
 | Event                                    | Payload                                   |

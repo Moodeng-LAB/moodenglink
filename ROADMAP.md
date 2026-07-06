@@ -36,6 +36,8 @@ Last updated: 2026-07-06
 - ✅ **REST resilience** — retry transient failures, `?trace=true`, typed `RestError`
 - ✅ **Lyrics** (LavaLyrics) — static + live line events (`lyricsFound/Line/NotFound`)
 - ✅ **Persistence / resume** — `SessionStore` + `MemoryStore` & `RedisStore` adapters
+- ✅ **`Structure.extend()`** — subclass Player / Queue / Node / Filters; the manager
+      instantiates the extended classes everywhere (Erela/Magmastream-style)
 - ✅ Player user-data helpers (`set` / `get`)
 
 ### Tooling / distribution
@@ -60,8 +62,6 @@ Last updated: 2026-07-06
 
 ## 📋 Planned (next up)
 
-- 📋 **`Structure.extend()`** — let users subclass `Player` / `Queue` / `Node` / `Filters`
-      (Erela/Magmastream-style) and have the manager instantiate the custom class
 - 📋 **SponsorBlock** plugin support (categories + `SegmentsLoaded/Skipped` events)
 - 📋 **Voice hardening** — region-change handling, resume-after-move, 4014 rejoin backoff
 - 📋 **npm publish** — release workflow + semantic-release / changesets

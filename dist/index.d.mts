@@ -923,6 +923,36 @@ declare class Moodenglink extends EventEmitter {
 }
 
 /**
+ * A tiny registry that lets consumers swap in their own subclasses of the core
+ * structures (Erela.js / Magmastream `Structure.extend` style).
+ *
+ * ```ts
+ * Structure.extend("Player", (Player) => class MyPlayer extends Player {
+ *   announce() { console.log("now playing", this.current?.title); }
+ * });
+ * ```
+ * The manager instantiates via {@link Structure.get}, so extensions take effect
+ * everywhere without any further wiring.
+ * @module classes/Structure
+ */
+
+/** The set of structures that can be extended, keyed by name. */
+interface Extendable {
+    Player: typeof Player;
+    Queue: typeof Queue;
+    Node: typeof Node;
+    Filters: typeof Filters;
+}
+declare abstract class Structure {
+    /** Replaces a structure with a subclass produced by `extender`. */
+    static extend<K extends keyof Extendable, T extends Extendable[K]>(name: K, extender: (target: Extendable[K]) => T): T;
+    /** Returns the (possibly extended) constructor registered for `name`. */
+    static get<K extends keyof Extendable>(name: K): Extendable[K];
+    /** Resets a structure back to its built-in implementation (mostly for tests). */
+    static reset(name?: keyof Extendable): void;
+}
+
+/**
  * Ready-made {@link SessionStore} backends for player persistence & resuming.
  * @module classes/stores
  */
@@ -1024,4 +1054,4 @@ declare class TTLCache<K, V> {
 
 declare const version = "1.0.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUrl, leastLoadNode, leastUsedNode, partialTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUrl, leastLoadNode, leastUsedNode, partialTrack, shuffleArray, sleep, version };

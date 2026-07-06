@@ -24,6 +24,7 @@ import { TTLCache } from "../utils/cache";
 import { buildTrack, partialTrack } from "../utils/utils";
 import { Node } from "./Node";
 import { Player } from "./Player";
+import { Structure } from "./Structure";
 import type { Plugin } from "./Plugin";
 
 // Strongly typed EventEmitter surface.
@@ -69,7 +70,7 @@ export class Moodenglink extends EventEmitter {
 		}
 
 		for (const nodeOptions of this.options.nodes) {
-			const node = new Node(this, nodeOptions);
+			const node = new (Structure.get("Node"))(this, nodeOptions);
 			this.nodes.set(node.id, node);
 			this.emit("nodeCreate", node);
 		}
@@ -94,7 +95,7 @@ export class Moodenglink extends EventEmitter {
 
 	/** Adds and connects a node at runtime. */
 	public addNode(options: ManagerOptions["nodes"][number]): Node {
-		const node = new Node(this, options);
+		const node = new (Structure.get("Node"))(this, options);
 		this.nodes.set(node.id, node);
 		this.emit("nodeCreate", node);
 		if (this.initialized) node.connect();
@@ -126,7 +127,7 @@ export class Moodenglink extends EventEmitter {
 		if (existing) return existing;
 
 		const node = options.node ? this.nodes.get(options.node) : undefined;
-		const player = new Player(this, options, node?.connected ? node : this.idealNode);
+		const player = new (Structure.get("Player"))(this, options, node?.connected ? node : this.idealNode);
 		this.players.set(options.guild, player);
 		this.emit("playerCreate", player);
 		return player;
