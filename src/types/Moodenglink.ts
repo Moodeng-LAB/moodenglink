@@ -10,12 +10,18 @@ import type { NodeOptions, NodeStats } from "./Node";
 import type { Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
 import type { SearchPlatform } from "../utils/sources";
 import type {
+	ChapterStartedEvent,
+	ChaptersLoadedEvent,
 	LyricsFoundEvent,
 	LyricsLine,
 	LyricsLineEvent,
 	LyricsNotFoundEvent,
 	LyricsResult,
 	PlayerEvent,
+	SegmentSkippedEvent,
+	SegmentsLoadedEvent,
+	SponsorBlockChapter,
+	SponsorBlockSegment,
 	TrackEndEvent,
 	TrackExceptionEvent,
 	TrackStartEvent,
@@ -96,6 +102,11 @@ export interface ManagerEvents {
 	lyricsFound: [player: Player, lyrics: LyricsResult, payload: LyricsFoundEvent];
 	lyricsNotFound: [player: Player, payload: LyricsNotFoundEvent];
 	lyricsLine: [player: Player, line: LyricsLine, payload: LyricsLineEvent];
+
+	segmentsLoaded: [player: Player, segments: SponsorBlockSegment[], payload: SegmentsLoadedEvent];
+	segmentSkipped: [player: Player, segment: SponsorBlockSegment, payload: SegmentSkippedEvent];
+	chaptersLoaded: [player: Player, chapters: SponsorBlockChapter[], payload: ChaptersLoadedEvent];
+	chapterStarted: [player: Player, chapter: SponsorBlockChapter, payload: ChapterStartedEvent];
 
 	raw: [payload: PlayerEvent];
 	debug: [message: string];

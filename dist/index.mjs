@@ -318,6 +318,10 @@ var EventTypes = /* @__PURE__ */ ((EventTypes2) => {
   EventTypes2["LyricsFoundEvent"] = "LyricsFoundEvent";
   EventTypes2["LyricsNotFoundEvent"] = "LyricsNotFoundEvent";
   EventTypes2["LyricsLineEvent"] = "LyricsLineEvent";
+  EventTypes2["SegmentsLoaded"] = "SegmentsLoaded";
+  EventTypes2["SegmentSkipped"] = "SegmentSkipped";
+  EventTypes2["ChaptersLoaded"] = "ChaptersLoaded";
+  EventTypes2["ChapterStarted"] = "ChapterStarted";
   return EventTypes2;
 })(EventTypes || {});
 
@@ -433,6 +437,19 @@ var Rest = class {
   /** Cancels a live lyrics subscription for a guild. */
   unsubscribeLyrics(guildId) {
     return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE" });
+  }
+  /* ----------------------- SponsorBlock plugin ----------------------- */
+  /** Sets the SponsorBlock categories the node should skip for a guild. */
+  setSponsorBlockCategories(guildId, categories) {
+    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "PUT", body: categories });
+  }
+  /** Gets the SponsorBlock categories currently enabled for a guild. */
+  getSponsorBlockCategories(guildId) {
+    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`);
+  }
+  /** Clears all SponsorBlock categories for a guild. */
+  clearSponsorBlockCategories(guildId) {
+    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE" });
   }
 };
 var RestError = class extends Error {
@@ -608,6 +625,18 @@ var Node = class {
         break;
       case "LyricsLineEvent" /* LyricsLineEvent */:
         this.manager.emit("lyricsLine", player, payload.line, payload);
+        break;
+      case "SegmentsLoaded" /* SegmentsLoaded */:
+        this.manager.emit("segmentsLoaded", player, payload.segments, payload);
+        break;
+      case "SegmentSkipped" /* SegmentSkipped */:
+        this.manager.emit("segmentSkipped", player, payload.segment, payload);
+        break;
+      case "ChaptersLoaded" /* ChaptersLoaded */:
+        this.manager.emit("chaptersLoaded", player, payload.chapters, payload);
+        break;
+      case "ChapterStarted" /* ChapterStarted */:
+        this.manager.emit("chapterStarted", player, payload.chapter, payload);
         break;
     }
   }
@@ -866,6 +895,19 @@ var Player = class {
   /** Cancels a live lyrics subscription. */
   unsubscribeLyrics() {
     return this.node.rest.unsubscribeLyrics(this.guild);
+  }
+  /* ----------------------- SponsorBlock (plugin) ----------------------- */
+  /** Sets the SponsorBlock categories to skip — listen on `segmentSkipped`. */
+  setSponsorBlock(categories) {
+    return this.node.rest.setSponsorBlockCategories(this.guild, categories);
+  }
+  /** Gets the SponsorBlock categories currently enabled for this player. */
+  getSponsorBlock() {
+    return this.node.rest.getSponsorBlockCategories(this.guild);
+  }
+  /** Disables SponsorBlock skipping for this player. */
+  clearSponsorBlock() {
+    return this.node.rest.clearSponsorBlockCategories(this.guild);
   }
   /* ---------------------------- voice handling ---------------------------- */
   /** @internal Feeds a raw Discord VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE. */

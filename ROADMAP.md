@@ -35,6 +35,8 @@ Last updated: 2026-07-06
 - ✅ **Search cache** — opt-in TTL/LRU (`TTLCache`), re-stamps requester on hits
 - ✅ **REST resilience** — retry transient failures, `?trace=true`, typed `RestError`
 - ✅ **Lyrics** (LavaLyrics) — static + live line events (`lyricsFound/Line/NotFound`)
+- ✅ **SponsorBlock** — set/get/clear categories + `segmentsLoaded` / `segmentSkipped` /
+      `chaptersLoaded` / `chapterStarted` events
 - ✅ **Unresolved tracks** — `manager.buildUnresolved(query)` queue items resolved
       lazily at `play()` time (Spotify/Apple metadata → playable), closest-match
       heuristic, failed items skipped automatically
@@ -62,7 +64,6 @@ Last updated: 2026-07-06
 
 ## 📋 Planned (next up)
 
-- 📋 **SponsorBlock** plugin support (categories + `SegmentsLoaded/Skipped` events)
 - 📋 **Voice hardening** — region-change handling, resume-after-move, 4014 rejoin backoff
 - 📋 **npm publish** — release workflow + semantic-release / changesets
 

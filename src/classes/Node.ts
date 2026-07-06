@@ -216,6 +216,18 @@ export class Node {
 			case EventTypes.LyricsLineEvent:
 				this.manager.emit("lyricsLine", player, payload.line, payload);
 				break;
+			case EventTypes.SegmentsLoaded:
+				this.manager.emit("segmentsLoaded", player, payload.segments, payload);
+				break;
+			case EventTypes.SegmentSkipped:
+				this.manager.emit("segmentSkipped", player, payload.segment, payload);
+				break;
+			case EventTypes.ChaptersLoaded:
+				this.manager.emit("chaptersLoaded", player, payload.chapters, payload);
+				break;
+			case EventTypes.ChapterStarted:
+				this.manager.emit("chapterStarted", player, payload.chapter, payload);
+				break;
 		}
 	}
 

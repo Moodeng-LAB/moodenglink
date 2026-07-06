@@ -17,6 +17,7 @@ Written in **TypeScript**, ships with **ESM + CJS + types**, and works with any 
 - **Audio filters** — equalizer presets, nightcore, vaporwave, 8D, karaoke, timescale and more.
 - **Autoplay** of related tracks when the queue ends (with repeat de-duplication).
 - **Lyrics** — static + live line-by-line via the LavaLyrics plugin.
+- **SponsorBlock** — skip sponsor/intro/outro segments + segment/chapter events.
 - **Search cache** — optional TTL/LRU cache to cut REST calls.
 - **Plugins** — extend the manager Magmastream/Moonlink-style.
 - Fully **typed events** and errors (`RestError` carries the HTTP status).
@@ -182,6 +183,24 @@ manager.on("lyricsNotFound", (player) => console.log("No lyrics available."));
 
 Requires the [LavaLyrics](https://github.com/DuncteBot/java-timed-lyrics) plugin on your node.
 
+## ⏭️ SponsorBlock
+
+Skip sponsor/intro/outro segments in YouTube playback via the
+[SponsorBlock plugin](https://github.com/topi314/Sponsorblock-Plugin):
+
+```ts
+await player.setSponsorBlock(["sponsor", "selfpromo", "intro", "outro", "music_offtopic"]);
+
+manager.on("segmentSkipped", (player, segment) => console.log("skipped", segment.category));
+manager.on("segmentsLoaded", (player, segments) => console.log(segments.length, "segments"));
+manager.on("chapterStarted", (player, chapter) => console.log("chapter:", chapter.name));
+
+await player.clearSponsorBlock();
+```
+
+Categories: `sponsor`, `selfpromo`, `interaction`, `intro`, `outro`, `preview`,
+`music_offtopic`, `filler`.
+
 ## 🗃️ Search cache
 
 ```ts
@@ -310,6 +329,8 @@ Extendable: `Player`, `Queue`, `Node`, `Filters`.
 | `queueEnd`                               | `(player, lastTrack, payload)`            |
 | `socketClosed`                           | `(player, payload)`                       |
 | `lyricsFound` / `lyricsLine` / `lyricsNotFound` | `(player, …, payload)`             |
+| `segmentsLoaded` / `segmentSkipped`      | SponsorBlock `(player, segment(s), payload)` |
+| `chaptersLoaded` / `chapterStarted`      | SponsorBlock `(player, chapter(s), payload)` |
 | `raw` / `debug`                          | low-level diagnostics                     |
 
 ## 🔎 Search platforms

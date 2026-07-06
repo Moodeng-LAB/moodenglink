@@ -22,6 +22,11 @@ export enum EventTypes {
 	LyricsFoundEvent = "LyricsFoundEvent",
 	LyricsNotFoundEvent = "LyricsNotFoundEvent",
 	LyricsLineEvent = "LyricsLineEvent",
+	// SponsorBlock plugin
+	SegmentsLoaded = "SegmentsLoaded",
+	SegmentSkipped = "SegmentSkipped",
+	ChaptersLoaded = "ChaptersLoaded",
+	ChapterStarted = "ChapterStarted",
 }
 
 /** Reason a track stopped playing. */
@@ -134,6 +139,46 @@ export interface LyricsLineEvent extends EventPayloadBase {
 	skipped: boolean;
 }
 
+/* ----------------------------- SponsorBlock ----------------------------- */
+
+/** SponsorBlock segment categories (see the SponsorBlock plugin docs). */
+export type SponsorBlockCategory = "sponsor" | "selfpromo" | "interaction" | "intro" | "outro" | "preview" | "music_offtopic" | "filler";
+
+export interface SponsorBlockSegment {
+	category: SponsorBlockCategory;
+	/** Segment start, in milliseconds. */
+	start: number;
+	/** Segment end, in milliseconds. */
+	end: number;
+}
+
+export interface SponsorBlockChapter {
+	name: string;
+	start: number;
+	end: number;
+	duration: number;
+}
+
+export interface SegmentsLoadedEvent extends EventPayloadBase {
+	type: EventTypes.SegmentsLoaded;
+	segments: SponsorBlockSegment[];
+}
+
+export interface SegmentSkippedEvent extends EventPayloadBase {
+	type: EventTypes.SegmentSkipped;
+	segment: SponsorBlockSegment;
+}
+
+export interface ChaptersLoadedEvent extends EventPayloadBase {
+	type: EventTypes.ChaptersLoaded;
+	chapters: SponsorBlockChapter[];
+}
+
+export interface ChapterStartedEvent extends EventPayloadBase {
+	type: EventTypes.ChapterStarted;
+	chapter: SponsorBlockChapter;
+}
+
 export type PlayerEvent =
 	| TrackStartEvent
 	| TrackEndEvent
@@ -142,6 +187,10 @@ export type PlayerEvent =
 	| WebSocketClosedEvent
 	| LyricsFoundEvent
 	| LyricsNotFoundEvent
-	| LyricsLineEvent;
+	| LyricsLineEvent
+	| SegmentsLoadedEvent
+	| SegmentSkippedEvent
+	| ChaptersLoadedEvent
+	| ChapterStartedEvent;
 
 export type IncomingPayload = ReadyPayload | PlayerUpdatePayload | StatsPayload | PlayerEvent;

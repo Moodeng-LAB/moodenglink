@@ -250,7 +250,11 @@ declare enum EventTypes {
     WebSocketClosedEvent = "WebSocketClosedEvent",
     LyricsFoundEvent = "LyricsFoundEvent",
     LyricsNotFoundEvent = "LyricsNotFoundEvent",
-    LyricsLineEvent = "LyricsLineEvent"
+    LyricsLineEvent = "LyricsLineEvent",
+    SegmentsLoaded = "SegmentsLoaded",
+    SegmentSkipped = "SegmentSkipped",
+    ChaptersLoaded = "ChaptersLoaded",
+    ChapterStarted = "ChapterStarted"
 }
 /** Reason a track stopped playing. */
 type TrackEndReason = "finished" | "loadFailed" | "stopped" | "replaced" | "cleanup";
@@ -355,7 +359,38 @@ interface LyricsLineEvent extends EventPayloadBase {
     line: LyricsLine;
     skipped: boolean;
 }
-type PlayerEvent = TrackStartEvent | TrackEndEvent | TrackExceptionEvent | TrackStuckEvent | WebSocketClosedEvent | LyricsFoundEvent | LyricsNotFoundEvent | LyricsLineEvent;
+/** SponsorBlock segment categories (see the SponsorBlock plugin docs). */
+type SponsorBlockCategory = "sponsor" | "selfpromo" | "interaction" | "intro" | "outro" | "preview" | "music_offtopic" | "filler";
+interface SponsorBlockSegment {
+    category: SponsorBlockCategory;
+    /** Segment start, in milliseconds. */
+    start: number;
+    /** Segment end, in milliseconds. */
+    end: number;
+}
+interface SponsorBlockChapter {
+    name: string;
+    start: number;
+    end: number;
+    duration: number;
+}
+interface SegmentsLoadedEvent extends EventPayloadBase {
+    type: EventTypes.SegmentsLoaded;
+    segments: SponsorBlockSegment[];
+}
+interface SegmentSkippedEvent extends EventPayloadBase {
+    type: EventTypes.SegmentSkipped;
+    segment: SponsorBlockSegment;
+}
+interface ChaptersLoadedEvent extends EventPayloadBase {
+    type: EventTypes.ChaptersLoaded;
+    chapters: SponsorBlockChapter[];
+}
+interface ChapterStartedEvent extends EventPayloadBase {
+    type: EventTypes.ChapterStarted;
+    chapter: SponsorBlockChapter;
+}
+type PlayerEvent = TrackStartEvent | TrackEndEvent | TrackExceptionEvent | TrackStuckEvent | WebSocketClosedEvent | LyricsFoundEvent | LyricsNotFoundEvent | LyricsLineEvent | SegmentsLoadedEvent | SegmentSkippedEvent | ChaptersLoadedEvent | ChapterStartedEvent;
 type IncomingPayload = ReadyPayload | PlayerUpdatePayload | StatsPayload | PlayerEvent;
 
 /**
@@ -519,6 +554,12 @@ declare class Rest {
     subscribeLyrics(guildId: string): Promise<void>;
     /** Cancels a live lyrics subscription for a guild. */
     unsubscribeLyrics(guildId: string): Promise<void>;
+    /** Sets the SponsorBlock categories the node should skip for a guild. */
+    setSponsorBlockCategories(guildId: string, categories: SponsorBlockCategory[]): Promise<void>;
+    /** Gets the SponsorBlock categories currently enabled for a guild. */
+    getSponsorBlockCategories(guildId: string): Promise<SponsorBlockCategory[]>;
+    /** Clears all SponsorBlock categories for a guild. */
+    clearSponsorBlockCategories(guildId: string): Promise<void>;
 }
 /** Error thrown for non-2xx Lavalink REST responses (carries the HTTP status). */
 declare class RestError extends Error {
@@ -746,6 +787,12 @@ declare class Player {
     subscribeLyrics(): Promise<void>;
     /** Cancels a live lyrics subscription. */
     unsubscribeLyrics(): Promise<void>;
+    /** Sets the SponsorBlock categories to skip — listen on `segmentSkipped`. */
+    setSponsorBlock(categories: SponsorBlockCategory[]): Promise<void>;
+    /** Gets the SponsorBlock categories currently enabled for this player. */
+    getSponsorBlock(): Promise<SponsorBlockCategory[]>;
+    /** Disables SponsorBlock skipping for this player. */
+    clearSponsorBlock(): Promise<void>;
     /** @internal Feeds a raw Discord VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE. */
     setVoiceState(sessionId?: string, event?: VoiceServer): Promise<void>;
     private sendVoiceUpdate;
@@ -862,6 +909,10 @@ interface ManagerEvents {
     lyricsFound: [player: Player, lyrics: LyricsResult, payload: LyricsFoundEvent];
     lyricsNotFound: [player: Player, payload: LyricsNotFoundEvent];
     lyricsLine: [player: Player, line: LyricsLine, payload: LyricsLineEvent];
+    segmentsLoaded: [player: Player, segments: SponsorBlockSegment[], payload: SegmentsLoadedEvent];
+    segmentSkipped: [player: Player, segment: SponsorBlockSegment, payload: SegmentSkippedEvent];
+    chaptersLoaded: [player: Player, chapters: SponsorBlockChapter[], payload: ChaptersLoadedEvent];
+    chapterStarted: [player: Player, chapter: SponsorBlockChapter, payload: ChapterStartedEvent];
     raw: [payload: PlayerEvent];
     debug: [message: string];
 }
@@ -1095,4 +1146,4 @@ declare class TTLCache<K, V> {
 
 declare const version = "1.0.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SessionStore, type Severity, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };

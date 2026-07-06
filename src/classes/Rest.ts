@@ -4,7 +4,7 @@
  */
 
 import type { NodeInfo, NodeStats } from "../types/Node";
-import type { LyricsResult } from "../types/Op";
+import type { LyricsResult, SponsorBlockCategory } from "../types/Op";
 import type { LavalinkPlayer, RequestOptions, UpdatePlayerBody } from "../types/Rest";
 import type { Node } from "./Node";
 
@@ -153,6 +153,23 @@ export class Rest {
 	/** Cancels a live lyrics subscription for a guild. */
 	public unsubscribeLyrics(guildId: string): Promise<void> {
 		return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE" });
+	}
+
+	/* ----------------------- SponsorBlock plugin ----------------------- */
+
+	/** Sets the SponsorBlock categories the node should skip for a guild. */
+	public setSponsorBlockCategories(guildId: string, categories: SponsorBlockCategory[]): Promise<void> {
+		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "PUT", body: categories });
+	}
+
+	/** Gets the SponsorBlock categories currently enabled for a guild. */
+	public getSponsorBlockCategories(guildId: string): Promise<SponsorBlockCategory[]> {
+		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`);
+	}
+
+	/** Clears all SponsorBlock categories for a guild. */
+	public clearSponsorBlockCategories(guildId: string): Promise<void> {
+		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE" });
 	}
 }
 

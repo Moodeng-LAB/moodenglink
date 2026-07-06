@@ -10,6 +10,7 @@ import type {
 	TrackStuckEvent,
 	WebSocketClosedEvent,
 	PlayerState,
+	SponsorBlockCategory,
 } from "../types/Op";
 import type { PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
@@ -310,6 +311,23 @@ export class Player {
 	/** Cancels a live lyrics subscription. */
 	public unsubscribeLyrics() {
 		return this.node.rest.unsubscribeLyrics(this.guild);
+	}
+
+	/* ----------------------- SponsorBlock (plugin) ----------------------- */
+
+	/** Sets the SponsorBlock categories to skip — listen on `segmentSkipped`. */
+	public setSponsorBlock(categories: SponsorBlockCategory[]) {
+		return this.node.rest.setSponsorBlockCategories(this.guild, categories);
+	}
+
+	/** Gets the SponsorBlock categories currently enabled for this player. */
+	public getSponsorBlock() {
+		return this.node.rest.getSponsorBlockCategories(this.guild);
+	}
+
+	/** Disables SponsorBlock skipping for this player. */
+	public clearSponsorBlock() {
+		return this.node.rest.clearSponsorBlockCategories(this.guild);
 	}
 
 	/* ---------------------------- voice handling ---------------------------- */
