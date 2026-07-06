@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# dist/ is committed so `bun add github:…` / git installs work without a build
+# step (Bun doesn't run the `prepare` script for git dependencies).
 *.log
 .env
 .DS_Store
