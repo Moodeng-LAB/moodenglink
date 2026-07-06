@@ -615,6 +615,7 @@ declare class Filters {
  */
 
 declare class Queue extends Array<Track> {
+    static get [Symbol.species](): ArrayConstructor;
     /** The track that is currently playing (or was, once it ends). */
     current: Track | null;
     /** Previously played tracks, most-recent-first. */
@@ -635,7 +636,7 @@ declare class Queue extends Array<Track> {
     shuffle(): void;
     /** Moves a track from one position to another. */
     move(from: number, to: number): void;
-    /** Removes duplicate tracks by encoded string, keeping first occurrences. */
+    /** Removes duplicate tracks by encoded string, keeping the first occurrence. */
     dedupe(): void;
 }
 

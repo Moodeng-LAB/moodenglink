@@ -21,6 +21,9 @@
     "dev": "tsup --watch",
     "lint": "prettier --check \"src/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
@@ -44,9 +47,11 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.12",
+    "@vitest/coverage-v8": "^4.1.10",
     "prettier": "^3.3.3",
     "tsup": "^8.2.4",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=18.0.0"

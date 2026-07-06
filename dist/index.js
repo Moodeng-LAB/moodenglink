@@ -554,7 +554,8 @@ var Equalizers = {
   party: bands([0.1, 0.1, 0.05, 0.05, 0.02, 0, 0, 0, 0, 0, 0, 0.02, 0.05, 0.05, 0.1]),
   rock: bands([0.3, 0.25, 0.2, 0.1, 0.05, -0.05, -0.15, -0.2, -0.1, -0.05, 0.05, 0.1, 0.2, 0.25, 0.3]),
   electronic: bands([0.375, 0.35, 0.125, 0, 0, -0.125, -0.125, 0, 0.25, 0.125, 0.15, 0.2, 0.25, 0.35, 0.4]),
-  radio: bands([0.65, 0.45, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0, -0.05, -0.1, -0.15, -0.2, -0.25, -0.3])
+  // Lavalink accepts band gains in the range -0.25 … 1.0.
+  radio: bands([0.65, 0.45, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0, -0.05, -0.1, -0.15, -0.2, -0.25, -0.25])
 };
 
 // src/classes/Filters.ts
@@ -698,6 +699,12 @@ var Queue = class extends Array {
     /** Previously played tracks, most-recent-first. */
     this.previous = [];
   }
+  // Derived operations (map/filter/slice/splice) return plain arrays instead of
+  // Queue instances — otherwise they'd carry this class's `current`/`previous`
+  // fields and leak them into results.
+  static get [Symbol.species]() {
+    return Array;
+  }
   /** Total duration of the queue (excluding the current track), in ms. */
   get duration() {
     return this.reduce((acc, track) => acc + (track.duration || 0), 0);
@@ -736,12 +743,16 @@ var Queue = class extends Array {
     const [track] = this.splice(from, 1);
     this.splice(to, 0, track);
   }
-  /** Removes duplicate tracks by encoded string, keeping first occurrences. */
+  /** Removes duplicate tracks by encoded string, keeping the first occurrence. */
   dedupe() {
     const seen = /* @__PURE__ */ new Set();
-    for (let i = this.length - 1; i >= 0; i--) {
-      if (seen.has(this[i].encoded)) this.splice(i, 1);
-      else seen.add(this[i].encoded);
+    for (let i = 0; i < this.length; i++) {
+      if (seen.has(this[i].encoded)) {
+        this.splice(i, 1);
+        i--;
+      } else {
+        seen.add(this[i].encoded);
+      }
     }
   }
 };

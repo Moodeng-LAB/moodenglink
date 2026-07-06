@@ -7,6 +7,13 @@ import type { Track } from "../types/Player";
 import { shuffleArray } from "../utils/utils";
 
 export class Queue extends Array<Track> {
+	// Derived operations (map/filter/slice/splice) return plain arrays instead of
+	// Queue instances — otherwise they'd carry this class's `current`/`previous`
+	// fields and leak them into results.
+	static get [Symbol.species](): ArrayConstructor {
+		return Array;
+	}
+
 	/** The track that is currently playing (or was, once it ends). */
 	public current: Track | null = null;
 
@@ -59,12 +66,16 @@ export class Queue extends Array<Track> {
 		this.splice(to, 0, track);
 	}
 
-	/** Removes duplicate tracks by encoded string, keeping first occurrences. */
+	/** Removes duplicate tracks by encoded string, keeping the first occurrence. */
 	public dedupe(): void {
 		const seen = new Set<string>();
-		for (let i = this.length - 1; i >= 0; i--) {
-			if (seen.has(this[i].encoded)) this.splice(i, 1);
-			else seen.add(this[i].encoded);
+		for (let i = 0; i < this.length; i++) {
+			if (seen.has(this[i].encoded)) {
+				this.splice(i, 1);
+				i--;
+			} else {
+				seen.add(this[i].encoded);
+			}
 		}
 	}
 }

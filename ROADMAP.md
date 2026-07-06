@@ -42,7 +42,10 @@ Last updated: 2026-07-06
 
 - ✅ TypeScript, strict; builds CJS + ESM + `.d.ts` (tsup)
 - ✅ `dist/` committed so `bun add github:…` / git installs work with no build step
-- ✅ **CI** — GitHub Actions: type-check + build + auto-commit `dist` on push
+- ✅ **CI** — GitHub Actions: type-check + **test** + build + auto-commit `dist` on push
+- ✅ **Test suite (Vitest)** — 50 tests across queue, cache, sources, utils, equalizers,
+      stores, filters, node penalties and a mocked manager/search/voice integration
+      (found & fixed 3 bugs: Queue species leak, `dedupe` order, out-of-range EQ gain)
 
 ---
 
@@ -59,8 +62,6 @@ Last updated: 2026-07-06
 
 - 📋 **`Structure.extend()`** — let users subclass `Player` / `Queue` / `Node` / `Filters`
       (Erela/Magmastream-style) and have the manager instantiate the custom class
-- 📋 **Test suite** — Vitest unit tests (queue, cache, sources, penalties) + a mocked
-      Lavalink integration test; run in CI
 - 📋 **SponsorBlock** plugin support (categories + `SegmentsLoaded/Skipped` events)
 - 📋 **Voice hardening** — region-change handling, resume-after-move, 4014 rejoin backoff
 - 📋 **npm publish** — release workflow + semantic-release / changesets

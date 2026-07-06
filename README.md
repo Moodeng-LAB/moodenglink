@@ -270,6 +270,14 @@ manager.use(new MyPlugin());
 > Platforms beyond YouTube/SoundCloud require the matching Lavalink source plugin
 > (e.g. LavaSrc for Spotify/Apple/Deezer).
 
+## 🧪 Testing
+
+```bash
+npm test            # run the Vitest suite
+npm run test:watch  # watch mode
+npm run test:coverage
+```
+
 ## 🛠️ Building from source
 
 ```bash
