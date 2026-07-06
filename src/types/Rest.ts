@@ -21,6 +21,12 @@ export interface LavalinkVoiceState {
 	token: string;
 	endpoint: string;
 	sessionId: string;
+	/**
+	 * The voice channel id. Optional in the stock Lavalink v4 protocol (extra
+	 * keys are ignored) but **required** by some node builds, which otherwise
+	 * reject the update with `Field 'channelId' is required ... at path: $.voice`.
+	 */
+	channelId?: string;
 }
 
 /** Body accepted by `PATCH /sessions/{sessionId}/players/{guildId}`. */

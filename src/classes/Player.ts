@@ -273,9 +273,17 @@ export class Player {
 
 	private async sendVoiceUpdate(): Promise<void> {
 		const { sessionId, event } = this.voiceState;
-		if (!sessionId || !event) return;
+		// Discord's first VOICE_SERVER_UPDATE can carry a null endpoint, and the
+		// two voice packets arrive in any order — only send once every field is
+		// present, otherwise the node rejects the update with a 400.
+		if (!event?.token || !event.endpoint || !sessionId || !this.voiceChannel) return;
 		await this.node.rest.updatePlayer(this.guild, {
-			voice: { token: event.token, endpoint: event.endpoint, sessionId },
+			voice: {
+				token: event.token,
+				endpoint: event.endpoint,
+				sessionId,
+				channelId: this.voiceChannel,
+			},
 		});
 	}
 
