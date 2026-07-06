@@ -31,6 +31,9 @@ Last updated: 2026-07-06
 
 - ✅ **Load balancing** — `Node.penalties` (Erela-style) + `leastUsedNode` / `leastLoadNode`
 - ✅ **Auto failover** (`autoMove`) — migrate players off a dead node
+- ✅ **Voice hardening** — recover from voice close codes (4006/4009/4014/4015/1006)
+      with capped, backing-off reconnects; counter resets on a healthy connection;
+      never fights an intentional disconnect/destroy
 - ✅ **Autoplay** related tracks with repeat de-duplication
 - ✅ **Search cache** — opt-in TTL/LRU (`TTLCache`), re-stamps requester on hits
 - ✅ **REST resilience** — retry transient failures, `?trace=true`, typed `RestError`
@@ -64,8 +67,16 @@ Last updated: 2026-07-06
 
 ## 📋 Planned (next up)
 
-- 📋 **Voice hardening** — region-change handling, resume-after-move, 4014 rejoin backoff
 - 📋 **npm publish** — release workflow + semantic-release / changesets
+
+## 🚫 Not applicable (by architecture)
+
+- **DAVE / voice E2EE** — Discord's DAVE (MLS-based A/V end-to-end encryption) is
+  negotiated on the **voice transport**, which in a Lavalink setup is owned by the
+  **Lavalink server**, not this client wrapper. Moodenglink only forwards the voice
+  `token`/`endpoint`/`sessionId`/`channelId`, so there is nothing to implement here —
+  and Discord disables E2EE on any call a bot is in, so music bots are unaffected.
+  If the node adds DAVE, Moodenglink already works with it unchanged.
 
 ---
 

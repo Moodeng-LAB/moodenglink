@@ -205,7 +205,7 @@ export class Node {
 				player.handleTrackException(payload);
 				break;
 			case EventTypes.WebSocketClosedEvent:
-				player.handleSocketClosed(payload);
+				void player.handleSocketClosed(payload);
 				break;
 			case EventTypes.LyricsFoundEvent:
 				this.manager.emit("lyricsFound", player, payload.lyrics, payload);

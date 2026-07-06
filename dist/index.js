@@ -682,7 +682,7 @@ var Node = class {
         player.handleTrackException(payload);
         break;
       case "WebSocketClosedEvent" /* WebSocketClosedEvent */:
-        player.handleSocketClosed(payload);
+        void player.handleSocketClosed(payload);
         break;
       case "LyricsFoundEvent" /* LyricsFoundEvent */:
         this.manager.emit("lyricsFound", player, payload.lyrics, payload);
@@ -742,7 +742,7 @@ var RepeatMode = /* @__PURE__ */ ((RepeatMode2) => {
 })(RepeatMode || {});
 
 // src/classes/Player.ts
-var Player = class {
+var Player = class _Player {
   constructor(manager, options, node) {
     this.position = 0;
     this.ping = 0;
@@ -755,6 +755,8 @@ var Player = class {
     this.autoplay = false;
     /** Raw Discord voice state/server used to hand off to Lavalink. */
     this.voiceState = {};
+    /** How many consecutive voice reconnects have been attempted (reset on connect). */
+    this.voiceReconnectAttempts = 0;
     this.manager = manager;
     this.node = node;
     this.guild = options.guild;
@@ -1004,6 +1006,10 @@ var Player = class {
     this.connected = state.connected;
     this.ping = state.ping;
     this.timestamp = state.time;
+    if (state.connected) {
+      this.voiceReconnectAttempts = 0;
+      if (this.state === "RESUMING") this.state = "CONNECTED";
+    }
     this.manager.emit("playerStateUpdate", this);
   }
   /** @internal */
@@ -1055,11 +1061,35 @@ var Player = class {
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackError", this, track, payload);
   }
+  static {
+    /**
+     * Voice close codes worth recovering from — session invalidations, timeouts,
+     * voice-server crashes and abnormal drops. Fatal ones (4004 auth failed,
+     * 4011/4012 unknown, etc.) are left alone.
+     */
+    this.RECOVERABLE_VOICE_CLOSE = /* @__PURE__ */ new Set([4006, 4009, 4014, 4015, 1006]);
+  }
   /** @internal */
-  handleSocketClosed(payload) {
+  async handleSocketClosed(payload) {
     this.manager.emit("socketClosed", this, payload);
-    if ([4006, 4009, 4014].includes(payload.code) && this.voiceChannel) {
+    if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel) return;
+    if (!_Player.RECOVERABLE_VOICE_CLOSE.has(payload.code)) return;
+    const maxTries = this.manager.options.voiceReconnectTries ?? 3;
+    if (this.voiceReconnectAttempts >= maxTries) {
+      this.manager.emit("debug", `[Player ${this.guild}] Gave up voice reconnect after ${maxTries} tries (close ${payload.code}).`);
+      this.voiceReconnectAttempts = 0;
+      return;
+    }
+    this.voiceReconnectAttempts++;
+    const delay = (this.manager.options.voiceReconnectDelay ?? 1e3) * this.voiceReconnectAttempts;
+    this.state = "RESUMING";
+    this.manager.emit("debug", `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries} in ${delay}ms.`);
+    await sleep(delay);
+    if (!this.voiceChannel || this.state === "DESTROYING") return;
+    try {
       this.connect();
+    } catch (error) {
+      this.manager.emit("nodeError", this.node, error);
     }
   }
   /* ---------------------------- persistence ---------------------------- */

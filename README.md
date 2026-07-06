@@ -234,6 +234,19 @@ const manager = new Moodenglink({
 players, CPU system load and dropped/nulled audio frames, biased by each node's
 `priority`. `leastUsedNode` (the default) simply ranks by active player count.
 
+### Voice resilience
+
+Dropped voice connections (Discord close codes `4006`, `4009`, `4014`, `4015`, `1006`)
+are recovered automatically: the player re-joins with a backing-off delay, up to
+`voiceReconnectTries` times (default `3`, base delay `voiceReconnectDelay` = `1000ms`).
+The counter resets once voice is healthy again, and intentional
+`disconnect()`/`destroy()` are never fought.
+
+> **DAVE (voice E2EE):** nothing to configure. Discord's DAVE encryption lives on the
+> voice transport owned by the **Lavalink node**, not this wrapper — and Discord
+> disables E2EE on any call a bot is in. Moodenglink stays compatible by simply
+> forwarding voice updates untouched.
+
 ## 💾 Session resume & persistence
 
 Players are serialised on state changes and restored when a node reconnects

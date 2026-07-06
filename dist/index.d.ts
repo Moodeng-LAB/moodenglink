@@ -742,6 +742,8 @@ declare class Player {
         sessionId?: string;
         event?: VoiceServer;
     };
+    /** How many consecutive voice reconnects have been attempted (reset on connect). */
+    private voiceReconnectAttempts;
     constructor(manager: Moodenglink, options: PlayerOptions, node: Node);
     /** The track currently playing, if any. */
     get current(): Track | null;
@@ -807,8 +809,14 @@ declare class Player {
     handleTrackStuck(payload: TrackStuckEvent): void;
     /** @internal */
     handleTrackException(payload: TrackExceptionEvent): void;
+    /**
+     * Voice close codes worth recovering from — session invalidations, timeouts,
+     * voice-server crashes and abnormal drops. Fatal ones (4004 auth failed,
+     * 4011/4012 unknown, etc.) are left alone.
+     */
+    private static readonly RECOVERABLE_VOICE_CLOSE;
     /** @internal */
-    handleSocketClosed(payload: WebSocketClosedEvent): void;
+    handleSocketClosed(payload: WebSocketClosedEvent): Promise<void>;
     /** Serialises the resumable state of this player. */
     toJSON(): Record<string, unknown>;
     /** @internal Persists this player to the configured store, if any. */
@@ -858,6 +866,10 @@ interface ManagerOptions {
     autoMove?: boolean;
     /** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */
     autoResume?: boolean;
+    /** How many times to try re-establishing a dropped voice connection. Defaults to `3`. */
+    voiceReconnectTries?: number;
+    /** Base delay (ms) between voice reconnect attempts; scales per attempt. Defaults to `1000`. */
+    voiceReconnectDelay?: number;
     /** The default platform used when a search query has no source prefix. */
     defaultSearchPlatform?: SearchPlatform;
     /** Fields to strip from tracks to save memory (never removes `encoded`). */

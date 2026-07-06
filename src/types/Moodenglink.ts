@@ -52,6 +52,10 @@ export interface ManagerOptions {
 	autoMove?: boolean;
 	/** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */
 	autoResume?: boolean;
+	/** How many times to try re-establishing a dropped voice connection. Defaults to `3`. */
+	voiceReconnectTries?: number;
+	/** Base delay (ms) between voice reconnect attempts; scales per attempt. Defaults to `1000`. */
+	voiceReconnectDelay?: number;
 	/** The default platform used when a search query has no source prefix. */
 	defaultSearchPlatform?: SearchPlatform;
 	/** Fields to strip from tracks to save memory (never removes `encoded`). */

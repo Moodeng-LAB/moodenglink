@@ -15,7 +15,7 @@ import type {
 import type { PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
 import type { UpdatePlayerBody } from "../types/Rest";
-import { buildTrack, clamp, isUnresolvedTrack } from "../utils/utils";
+import { buildTrack, clamp, isUnresolvedTrack, sleep } from "../utils/utils";
 import type { Filters } from "./Filters";
 import type { Moodenglink } from "./Moodenglink";
 import type { Node } from "./Node";
@@ -64,6 +64,9 @@ export class Player {
 
 	/** Raw Discord voice state/server used to hand off to Lavalink. */
 	public voiceState: { sessionId?: string; event?: VoiceServer } = {};
+
+	/** How many consecutive voice reconnects have been attempted (reset on connect). */
+	private voiceReconnectAttempts = 0;
 
 	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
 		this.manager = manager;
@@ -366,6 +369,11 @@ export class Player {
 		this.connected = state.connected;
 		this.ping = state.ping;
 		this.timestamp = state.time;
+		// A healthy voice connection clears the reconnect counter.
+		if (state.connected) {
+			this.voiceReconnectAttempts = 0;
+			if (this.state === "RESUMING") this.state = "CONNECTED";
+		}
 		this.manager.emit("playerStateUpdate", this);
 	}
 
@@ -432,12 +440,44 @@ export class Player {
 		this.manager.emit("trackError", this, track, payload);
 	}
 
+	/**
+	 * Voice close codes worth recovering from — session invalidations, timeouts,
+	 * voice-server crashes and abnormal drops. Fatal ones (4004 auth failed,
+	 * 4011/4012 unknown, etc.) are left alone.
+	 */
+	private static readonly RECOVERABLE_VOICE_CLOSE = new Set([4006, 4009, 4014, 4015, 1006]);
+
 	/** @internal */
-	public handleSocketClosed(payload: WebSocketClosedEvent): void {
+	public async handleSocketClosed(payload: WebSocketClosedEvent): Promise<void> {
 		this.manager.emit("socketClosed", this, payload);
-		// 4006/4009/4014 = session invalid / disconnected — try to rejoin.
-		if ([4006, 4009, 4014].includes(payload.code) && this.voiceChannel) {
+
+		// Never fight an intentional teardown, and only recover a real channel.
+		if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel) return;
+		if (!Player.RECOVERABLE_VOICE_CLOSE.has(payload.code)) return;
+
+		const maxTries = this.manager.options.voiceReconnectTries ?? 3;
+		if (this.voiceReconnectAttempts >= maxTries) {
+			this.manager.emit("debug", `[Player ${this.guild}] Gave up voice reconnect after ${maxTries} tries (close ${payload.code}).`);
+			this.voiceReconnectAttempts = 0;
+			return;
+		}
+
+		this.voiceReconnectAttempts++;
+		const delay = (this.manager.options.voiceReconnectDelay ?? 1000) * this.voiceReconnectAttempts;
+		this.state = "RESUMING";
+		this.manager.emit("debug", `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries} in ${delay}ms.`);
+
+		await sleep(delay);
+		// The player may have been destroyed or disconnected while we waited
+		// (cast: `state` can be mutated by destroy()/disconnect() across the await).
+		if (!this.voiceChannel || (this.state as State) === "DESTROYING") return;
+
+		// Re-join: Discord replies with fresh voice server/state which we forward,
+		// re-establishing the connection (and handing the node a new session).
+		try {
 			this.connect();
+		} catch (error) {
+			this.manager.emit("nodeError", this.node, error as Error);
 		}
 	}
 
