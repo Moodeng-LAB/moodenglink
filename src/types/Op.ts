@@ -18,6 +18,10 @@ export enum EventTypes {
 	TrackExceptionEvent = "TrackExceptionEvent",
 	TrackStuckEvent = "TrackStuckEvent",
 	WebSocketClosedEvent = "WebSocketClosedEvent",
+	// LavaLyrics plugin
+	LyricsFoundEvent = "LyricsFoundEvent",
+	LyricsNotFoundEvent = "LyricsNotFoundEvent",
+	LyricsLineEvent = "LyricsLineEvent",
 }
 
 /** Reason a track stopped playing. */
@@ -97,6 +101,47 @@ export interface WebSocketClosedEvent extends EventPayloadBase {
 	byRemote: boolean;
 }
 
-export type PlayerEvent = TrackStartEvent | TrackEndEvent | TrackExceptionEvent | TrackStuckEvent | WebSocketClosedEvent;
+/* ------------------------------ LavaLyrics ------------------------------ */
+
+export interface LyricsLine {
+	timestamp: number;
+	duration: number | null;
+	line: string;
+	plugin: Record<string, unknown>;
+}
+
+export interface LyricsResult {
+	sourceName: string;
+	provider: string;
+	text: string | null;
+	lines: LyricsLine[];
+	plugin: Record<string, unknown>;
+}
+
+export interface LyricsFoundEvent extends EventPayloadBase {
+	type: EventTypes.LyricsFoundEvent;
+	lyrics: LyricsResult;
+}
+
+export interface LyricsNotFoundEvent extends EventPayloadBase {
+	type: EventTypes.LyricsNotFoundEvent;
+}
+
+export interface LyricsLineEvent extends EventPayloadBase {
+	type: EventTypes.LyricsLineEvent;
+	lineIndex: number;
+	line: LyricsLine;
+	skipped: boolean;
+}
+
+export type PlayerEvent =
+	| TrackStartEvent
+	| TrackEndEvent
+	| TrackExceptionEvent
+	| TrackStuckEvent
+	| WebSocketClosedEvent
+	| LyricsFoundEvent
+	| LyricsNotFoundEvent
+	| LyricsLineEvent;
 
 export type IncomingPayload = ReadyPayload | PlayerUpdatePayload | StatsPayload | PlayerEvent;

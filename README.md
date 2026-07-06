@@ -15,9 +15,11 @@ Written in **TypeScript**, ships with **ESM + CJS + types**, and works with any 
 - **Player persistence & resume** across restarts via a swappable `store` (Redis, Map, file…).
 - **Queue** with history, repeat modes, shuffle, move, dedupe.
 - **Audio filters** — equalizer presets, nightcore, vaporwave, 8D, karaoke, timescale and more.
-- **Autoplay** of related tracks when the queue ends.
+- **Autoplay** of related tracks when the queue ends (with repeat de-duplication).
+- **Lyrics** — static + live line-by-line via the LavaLyrics plugin.
+- **Search cache** — optional TTL/LRU cache to cut REST calls.
 - **Plugins** — extend the manager Magmastream/Moonlink-style.
-- Fully **typed events**.
+- Fully **typed events** and errors (`RestError` carries the HTTP status).
 
 ## 📦 Install
 
@@ -100,6 +102,7 @@ async function play(guildId: string, voiceChannelId: string, textChannelId: stri
 | `defaultSearchPlatform` | `SearchPlatform`                       | `"youtube"`    | Default source for prefix-less queries.               |
 | `trackPartial`          | `(keyof Track)[]`                      | `[]`           | Fields to strip from tracks (never removes `encoded`).|
 | `store`                 | `SessionStore`                         | —              | Backend for persistence/resume (Redis, Map…).         |
+| `searchCache`           | `boolean \| { ttl?, maxSize? }`        | `false`        | Cache search results (default 30s TTL, 100 entries).  |
 | `sorter`                | `(nodes) => Collection<string, Node>`  | `leastUsedNode`| Node ordering strategy.                               |
 
 ### Manager methods
@@ -117,7 +120,8 @@ async function play(guildId: string, voiceChannelId: string, textChannelId: stri
 
 `connect()` · `disconnect()` · `play()` · `stop()` · `skip(n)` · `previous()` · `pause()` ·
 `resume()` · `seek(ms)` · `setVolume(0-1000)` · `setRepeatMode(mode)` · `setAutoplay(bool)` ·
-`setVoiceChannel(id)` · `setTextChannel(id)` · `moveNode(node)` · `destroy()`
+`setVoiceChannel(id)` · `setTextChannel(id)` · `moveNode(node)` · `set(k,v)` · `get(k)` ·
+`getLyrics()` · `subscribeLyrics()` · `unsubscribeLyrics()` · `destroy()`
 
 ### Queue
 
@@ -160,6 +164,34 @@ await player.filters.clear();
 
 Equalizer presets: `flat`, `bass`, `soft`, `treble`, `pop`, `party`, `rock`, `electronic`, `radio`.
 
+## 🎤 Lyrics (LavaLyrics plugin)
+
+```ts
+// Static lyrics for the current track
+const lyrics = await player.getLyrics();
+console.log(lyrics?.text ?? lyrics?.lines.map((l) => l.line).join("\n"));
+
+// Live, synced lyrics — emitted line by line
+await player.subscribeLyrics();
+manager.on("lyricsLine", (player, line) => console.log(line.line));
+manager.on("lyricsNotFound", (player) => console.log("No lyrics available."));
+```
+
+Requires the [LavaLyrics](https://github.com/DuncteBot/java-timed-lyrics) plugin on your node.
+
+## 🗃️ Search cache
+
+```ts
+const manager = new Moodenglink({
+  nodes,
+  searchCache: { ttl: 30_000, maxSize: 100 }, // or `true` for defaults
+  send,
+});
+```
+
+Identical queries are served from an in-memory LRU within the TTL window, and the
+`requester` is always re-stamped so cached tracks still attribute correctly.
+
 ## ⚖️ Load balancing & failover
 
 ```ts
@@ -170,11 +202,15 @@ const manager = new Moodenglink({
     { host: "eu-1", port: 2333, password: "…", priority: 10 },
     { host: "eu-2", port: 2333, password: "…", priority: 5 },
   ],
-  sorter: leastLoadNode, // pick the node with the lowest CPU load
+  sorter: leastLoadNode, // pick the lowest-penalty node (CPU + frames + players)
   autoMove: true,        // move players off a node that runs out of retries
   send,
 });
 ```
+
+`leastLoadNode` ranks by `node.penalties` — an Erela.js-style score combining playing
+players, CPU system load and dropped/nulled audio frames, biased by each node's
+`priority`. `leastUsedNode` (the default) simply ranks by active player count.
 
 ## 💾 Session resume & persistence
 
@@ -224,6 +260,7 @@ manager.use(new MyPlugin());
 | `trackStart` / `trackEnd` / `trackStuck` / `trackError` | `(player, track, payload)` |
 | `queueEnd`                               | `(player, lastTrack, payload)`            |
 | `socketClosed`                           | `(player, payload)`                       |
+| `lyricsFound` / `lyricsLine` / `lyricsNotFound` | `(player, …, payload)`             |
 | `raw` / `debug`                          | low-level diagnostics                     |
 
 ## 🔎 Search platforms

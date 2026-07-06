@@ -259,6 +259,36 @@ export class Player {
 		this.manager.emit("playerDestroy", this);
 	}
 
+	/* ------------------------------ user data ------------------------------ */
+
+	/** Stores an arbitrary value on the player. Chainable. */
+	public set<T = unknown>(key: string, value: T): this {
+		this.data[key] = value;
+		return this;
+	}
+
+	/** Reads a previously-stored value from the player. */
+	public get<T = unknown>(key: string): T | undefined {
+		return this.data[key] as T | undefined;
+	}
+
+	/* ------------------------- lyrics (LavaLyrics) ------------------------- */
+
+	/** Fetches lyrics for the currently-playing track (requires the LavaLyrics plugin). */
+	public getLyrics(skipTrackSource = false) {
+		return this.node.rest.getLyrics(this.guild, skipTrackSource);
+	}
+
+	/** Subscribes to live, line-by-line lyrics — listen on the `lyricsLine` event. */
+	public subscribeLyrics() {
+		return this.node.rest.subscribeLyrics(this.guild);
+	}
+
+	/** Cancels a live lyrics subscription. */
+	public unsubscribeLyrics() {
+		return this.node.rest.unsubscribeLyrics(this.guild);
+	}
+
 	/* ---------------------------- voice handling ---------------------------- */
 
 	/** @internal Feeds a raw Discord VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE. */

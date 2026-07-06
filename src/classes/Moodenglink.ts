@@ -20,6 +20,7 @@ import type {
 } from "../types/Player";
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
+import { TTLCache } from "../utils/cache";
 import { buildTrack, partialTrack } from "../utils/utils";
 import { Node } from "./Node";
 import { Player } from "./Player";
@@ -41,6 +42,9 @@ export class Moodenglink extends EventEmitter {
 
 	public initialized = false;
 
+	/** Optional search-result cache (enabled via `options.searchCache`). */
+	private readonly searchCache: TTLCache<string, SearchResult> | null;
+
 	constructor(options: ManagerOptions) {
 		super();
 		if (!options?.nodes?.length) throw new Error("Moodenglink requires at least one node.");
@@ -56,6 +60,13 @@ export class Moodenglink extends EventEmitter {
 			trackPartial: [],
 			...options,
 		};
+
+		if (options.searchCache) {
+			const cfg = options.searchCache === true ? {} : options.searchCache;
+			this.searchCache = new TTLCache(cfg.ttl ?? 30_000, cfg.maxSize ?? 100);
+		} else {
+			this.searchCache = null;
+		}
 
 		for (const nodeOptions of this.options.nodes) {
 			const node = new Node(this, nodeOptions);
@@ -143,8 +154,18 @@ export class Moodenglink extends EventEmitter {
 		const source = (typeof query === "string" ? undefined : query.source) ?? this.options.defaultSearchPlatform;
 		const identifier = buildSearchIdentifier(raw, source as SearchPlatform);
 
+		// Serve from cache when possible — but always stamp the current requester.
+		const cached = this.searchCache?.get(identifier);
+		if (cached) return { ...cached, tracks: cached.tracks.map((t) => ({ ...t, requester })) };
+
 		const res = (await node.rest.loadTracks(identifier)) as { loadType: LoadType; data: unknown };
-		return this.resolveLoadResult(res, requester);
+		const result = this.resolveLoadResult(res, requester);
+
+		// Only cache useful, deterministic results.
+		if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || result.loadType === "playlist")) {
+			this.searchCache.set(identifier, result);
+		}
+		return result;
 	}
 
 	private resolveLoadResult(res: { loadType: LoadType; data: unknown }, requester?: unknown): SearchResult {
@@ -200,7 +221,11 @@ export class Moodenglink extends EventEmitter {
 		const res = await this.search({ query: seed, source: platform }, previous.requester).catch(() => null);
 		if (!res?.tracks.length) return false;
 
-		const next = res.tracks.find((t) => t.identifier !== previous.identifier) ?? res.tracks[0];
+		// Avoid replaying anything already heard or still queued.
+		const played = new Set<string>([previous.identifier, ...player.queue.previous.map((t) => t.identifier)]);
+		const next = res.tracks.find((t) => !played.has(t.identifier)) ?? res.tracks.find((t) => t.identifier !== previous.identifier);
+		if (!next) return false;
+
 		player.queue.add(next);
 		await player.play();
 		return true;

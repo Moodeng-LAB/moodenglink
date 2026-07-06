@@ -4,6 +4,7 @@
  */
 
 import type { NodeInfo, NodeStats } from "../types/Node";
+import type { LyricsResult } from "../types/Op";
 import type { LavalinkPlayer, RequestOptions, UpdatePlayerBody } from "../types/Rest";
 import type { Node } from "./Node";
 
@@ -18,44 +19,61 @@ export class Rest {
 		this.baseUrl = `${secure ? "https" : "http"}://${host}:${port}/v4`;
 	}
 
-	/** Performs an authenticated request and parses the JSON body (if any). */
+	/**
+	 * Performs an authenticated request and parses the JSON body (if any).
+	 * Network-level failures are retried up to `retryAmount` times; HTTP errors
+	 * are surfaced with Lavalink's stack trace (requested via `?trace=true`).
+	 */
 	public async request<T = unknown>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+		const method = options.method ?? "GET";
 		const url = new URL(this.baseUrl + endpoint);
 		if (options.query) {
 			for (const [key, value] of Object.entries(options.query)) {
 				if (value !== undefined) url.searchParams.set(key, String(value));
 			}
 		}
+		// Ask the node to attach a stack trace to any error response.
+		url.searchParams.set("trace", "true");
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), this.node.options.requestTimeout);
+		const body = options.body !== undefined ? JSON.stringify(options.body) : undefined;
+		const headers = {
+			Authorization: this.node.options.password!,
+			"Content-Type": "application/json",
+			...options.headers,
+		};
 
-		try {
-			const response = await fetch(url, {
-				method: options.method ?? "GET",
-				headers: {
-					Authorization: this.node.options.password!,
-					"Content-Type": "application/json",
-					...options.headers,
-				},
-				body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-				signal: controller.signal,
-			});
+		const maxAttempts = Math.max(1, this.node.options.retryAmount);
+		let lastError: unknown;
 
-			if (response.status === 204) return undefined as T;
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), this.node.options.requestTimeout);
+			try {
+				const response = await fetch(url, { method, headers, body, signal: controller.signal });
 
-			const text = await response.text();
-			const data = text ? JSON.parse(text) : undefined;
+				if (response.status === 204) return undefined as T;
 
-			if (!response.ok) {
-				const message = (data && (data.message || data.error)) || response.statusText;
-				throw new Error(`Lavalink REST ${response.status} on ${options.method ?? "GET"} ${endpoint}: ${message}`);
+				const text = await response.text();
+				const data = text ? JSON.parse(text) : undefined;
+
+				if (!response.ok) {
+					const trace = typeof data?.trace === "string" ? ` — ${data.trace.split("\n")[0]}` : "";
+					const message = (data && (data.message || data.error)) || response.statusText;
+					// 4xx are deterministic — don't waste retries on them.
+					throw new RestError(`Lavalink REST ${response.status} on ${method} ${endpoint}: ${message}${trace}`, response.status);
+				}
+
+				return data as T;
+			} catch (error) {
+				lastError = error;
+				// Only retry transient network/abort failures, never HTTP 4xx/5xx bodies.
+				if (error instanceof RestError || attempt >= maxAttempts) throw error;
+			} finally {
+				clearTimeout(timeout);
 			}
-
-			return data as T;
-		} finally {
-			clearTimeout(timeout);
 		}
+
+		throw lastError;
 	}
 
 	/* ------------------------------- tracks ------------------------------- */
@@ -113,5 +131,38 @@ export class Rest {
 
 	public getStats(): Promise<NodeStats> {
 		return this.request("/stats");
+	}
+
+	/* ------------------------- lyrics (LavaLyrics) ------------------------- */
+
+	/** Fetches lyrics for a guild's currently-playing track. */
+	public getLyrics(guildId: string, skipTrackSource = false): Promise<LyricsResult | null> {
+		return this.request(`${this.sessionPath}/players/${guildId}/track/lyrics`, { query: { skipTrackSource } });
+	}
+
+	/** Fetches lyrics for an arbitrary encoded track. */
+	public getLyricsForTrack(encoded: string, skipTrackSource = false): Promise<LyricsResult | null> {
+		return this.request("/lyrics", { query: { track: encoded, skipTrackSource } });
+	}
+
+	/** Subscribes to live (line-by-line) lyrics events for a guild. */
+	public subscribeLyrics(guildId: string): Promise<void> {
+		return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "POST" });
+	}
+
+	/** Cancels a live lyrics subscription for a guild. */
+	public unsubscribeLyrics(guildId: string): Promise<void> {
+		return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE" });
+	}
+}
+
+/** Error thrown for non-2xx Lavalink REST responses (carries the HTTP status). */
+export class RestError extends Error {
+	constructor(
+		message: string,
+		public readonly status: number,
+	) {
+		super(message);
+		this.name = "RestError";
 	}
 }

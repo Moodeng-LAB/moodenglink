@@ -12,7 +12,7 @@ export { Node } from "./classes/Node";
 export { Player } from "./classes/Player";
 export type { PlayOptions } from "./classes/Player";
 export { Queue } from "./classes/Queue";
-export { Rest } from "./classes/Rest";
+export { Rest, RestError } from "./classes/Rest";
 export { Filters } from "./classes/Filters";
 export { Plugin } from "./classes/Plugin";
 
@@ -24,6 +24,7 @@ export { default as leastUsedNode } from "./sorter/leastUsedNode";
 export * from "./utils/sources";
 export * from "./utils/equalizers";
 export * from "./utils/utils";
+export { TTLCache } from "./utils/cache";
 
 // Types
 export * from "./types/Moodenglink";

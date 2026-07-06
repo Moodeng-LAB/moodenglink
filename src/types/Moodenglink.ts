@@ -9,7 +9,19 @@ import type { Player } from "../classes/Player";
 import type { NodeOptions, NodeStats } from "./Node";
 import type { Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
 import type { SearchPlatform } from "../utils/sources";
-import type { PlayerEvent, TrackEndEvent, TrackExceptionEvent, TrackStartEvent, TrackStuckEvent, WebSocketClosedEvent } from "./Op";
+import type {
+	LyricsFoundEvent,
+	LyricsLine,
+	LyricsLineEvent,
+	LyricsNotFoundEvent,
+	LyricsResult,
+	PlayerEvent,
+	TrackEndEvent,
+	TrackExceptionEvent,
+	TrackStartEvent,
+	TrackStuckEvent,
+	WebSocketClosedEvent,
+} from "./Op";
 
 /** A function that persists/restores player sessions across restarts. */
 export interface SessionStore {
@@ -40,6 +52,11 @@ export interface ManagerOptions {
 	trackPartial?: (keyof Track)[];
 	/** Optional storage backend enabling session resuming and player persistence. */
 	store?: SessionStore;
+	/**
+	 * Enables in-memory caching of search results to cut down on REST calls.
+	 * Pass `true` for defaults (30s TTL, 100 entries) or fine-tune the values.
+	 */
+	searchCache?: boolean | { ttl?: number; maxSize?: number };
 	/** Custom node-ordering strategy used for load balancing. */
 	sorter?: (nodes: Collection<string, Node>) => Collection<string, Node>;
 	/** REQUIRED — forwards a raw OP 4 payload to the Discord gateway. */
@@ -75,6 +92,10 @@ export interface ManagerEvents {
 	trackStuck: [player: Player, track: Track, payload: TrackStuckEvent];
 	trackError: [player: Player, track: Track, payload: TrackExceptionEvent];
 	socketClosed: [player: Player, payload: WebSocketClosedEvent];
+
+	lyricsFound: [player: Player, lyrics: LyricsResult, payload: LyricsFoundEvent];
+	lyricsNotFound: [player: Player, payload: LyricsNotFoundEvent];
+	lyricsLine: [player: Player, line: LyricsLine, payload: LyricsLineEvent];
 
 	raw: [payload: PlayerEvent];
 	debug: [message: string];

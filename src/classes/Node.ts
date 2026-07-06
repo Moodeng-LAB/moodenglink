@@ -67,6 +67,27 @@ export class Node {
 		return this.manager.players.filter((p) => p.node === this).size;
 	}
 
+	/**
+	 * A composite load score (lower is better) used by the load-balancing
+	 * sorters. Combines player count, CPU load and dropped-frame penalties —
+	 * the same heuristic Lavalink recommends and Erela.js popularised.
+	 */
+	public get penalties(): number {
+		if (!this.connected || !this.stats) return Number.MAX_SAFE_INTEGER;
+
+		const playerPenalty = this.stats.playingPlayers;
+		const cpuPenalty = Math.pow(1.05, 100 * this.stats.cpu.systemLoad) * 10 - 10;
+
+		let framePenalty = 0;
+		if (this.stats.frameStats && this.stats.frameStats.sent > 0) {
+			framePenalty += Math.pow(1.03, 500 * (this.stats.frameStats.deficit / 3000)) * 300 - 300;
+			framePenalty += (Math.pow(1.03, 500 * (this.stats.frameStats.nulled / 3000)) * 300 - 300) * 2;
+		}
+
+		// Higher priority lowers the score, biasing selection towards it.
+		return Math.round(playerPenalty + cpuPenalty + framePenalty) - this.options.priority;
+	}
+
 	/** Opens the WebSocket connection to the node. */
 	public connect(): void {
 		if (this.connected || this.socket) return;
@@ -185,6 +206,15 @@ export class Node {
 				break;
 			case EventTypes.WebSocketClosedEvent:
 				player.handleSocketClosed(payload);
+				break;
+			case EventTypes.LyricsFoundEvent:
+				this.manager.emit("lyricsFound", player, payload.lyrics, payload);
+				break;
+			case EventTypes.LyricsNotFoundEvent:
+				this.manager.emit("lyricsNotFound", player, payload);
+				break;
+			case EventTypes.LyricsLineEvent:
+				this.manager.emit("lyricsLine", player, payload.line, payload);
 				break;
 		}
 	}
