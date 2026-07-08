@@ -53,9 +53,12 @@ Last updated: 2026-07-06
 - ✅ TypeScript, strict; builds CJS + ESM + `.d.ts` (tsup)
 - ✅ `dist/` committed so `bun add github:…` / git installs work with no build step
 - ✅ **CI** — GitHub Actions: type-check + **test** + build + auto-commit `dist` on push
-- ✅ **Test suite (Vitest)** — 50 tests across queue, cache, sources, utils, equalizers,
+- ✅ **Test suite (Vitest)** — 71 tests across queue, cache, sources, utils, equalizers,
       stores, filters, node penalties and a mocked manager/search/voice integration
       (found & fixed 3 bugs: Queue species leak, `dedupe` order, out-of-range EQ gain)
+- ✅ **Release automation** — [changesets](https://github.com/changesets/changesets) +
+      `.github/workflows/release.yml`: contributors add a changeset, the workflow opens a
+      "Version Packages" PR, and merging it publishes to npm (public, with provenance)
 
 ---
 
@@ -67,7 +70,8 @@ Last updated: 2026-07-06
 
 ## 📋 Planned (next up)
 
-- 📋 **npm publish** — release workflow + semantic-release / changesets
+- 📋 **First 1.0.0 publish** — one-time bootstrap (see Releasing below); after that
+      the changesets flow drives every release.
 
 ## 🚫 Not applicable (by architecture)
 
@@ -95,3 +99,24 @@ Last updated: 2026-07-06
 - `dist/` is committed. **Run `npm run build` before committing** source changes, or
   just let CI refresh it (`build: update dist [skip ci]`).
 - Keep changes typed and formatted: `npm run format`, `npx tsc --noEmit`.
+
+## Releasing
+
+Releases run on [changesets](https://github.com/changesets/changesets):
+
+1. **Describe your change** — run `npm run changeset`, pick the bump (patch/minor/major)
+   and write a summary. Commit the generated `.changeset/*.md` file with your PR.
+2. **Version PR** — once changesets land on `main`, the `Release` workflow opens (or
+   updates) a **"chore: version packages"** PR that bumps `package.json` and updates the
+   changelog.
+3. **Publish** — merge that PR. The workflow runs `changeset publish` (which rebuilds
+   `dist` via `prepublishOnly`) and pushes the package to npm with provenance, plus a git
+   tag.
+
+**One-time setup** (repo admin):
+
+- Add an **`NPM_TOKEN`** repo secret (npm → Access Tokens → _Automation_ token).
+- The first `1.0.0` publish is a manual bootstrap — from a clean `main` run
+  `npm publish --access public` locally once. Every release after that goes through the
+  changesets flow above.
+

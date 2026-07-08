@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Don't race the "Build & Commit dist" workflow.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the "Version Packages" PR / push tags
+  pull-requests: write # open & update the release PR
+  id-token: write # npm provenance (OIDC)
+
+jobs:
+  release:
+    # Skip the auto dist-commit and the changesets version bump commit.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create release PR or publish to npm
+        uses: changesets/action@v1
+        with:
+          # `npm run release` -> `changeset publish` (prepublishOnly rebuilds dist).
+          publish: npm run release
+          version: npm run version
+          commit: "chore: version packages [skip ci]"
+          title: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
