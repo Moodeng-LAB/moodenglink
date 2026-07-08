@@ -43,6 +43,9 @@
   ],
   "author": "Moodeng Lab",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Moodeng-LAB/moodenglink.git"
