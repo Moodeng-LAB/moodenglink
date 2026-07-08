@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTrack, clamp, formatDuration, isObject, partialTrack, shuffleArray } from "../src/utils/utils";
+import { buildAutoplaySeed, buildTrack, clamp, formatDuration, isObject, partialTrack, shuffleArray } from "../src/utils/utils";
 import { makeTrackData } from "./helpers";
 
 describe("buildTrack", () => {
@@ -64,5 +64,28 @@ describe("shuffleArray", () => {
 		const arr = [1, 2, 3, 4, 5];
 		const shuffled = shuffleArray([...arr]);
 		expect(shuffled.slice().sort()).toEqual(arr);
+	});
+});
+
+describe("buildAutoplaySeed", () => {
+	it("strips the ' - Topic' channel suffix and combines with title", () => {
+		expect(buildAutoplaySeed({ author: "Silly Fools - Topic", title: "จันทร์" })).toBe("Silly Fools จันทร์");
+	});
+
+	it("strips VEVO and official noise", () => {
+		expect(buildAutoplaySeed({ author: "ArianaGrandeVEVO", title: "positions" })).toBe("ArianaGrande positions");
+		expect(buildAutoplaySeed({ author: "Coldplay Official", title: "Yellow" })).toBe("Coldplay Yellow");
+	});
+
+	it("falls back to the title when the author is only noise", () => {
+		expect(buildAutoplaySeed({ author: "- Topic", title: "Some Song" })).toBe("Some Song");
+	});
+
+	it("falls back to the author when there is no title", () => {
+		expect(buildAutoplaySeed({ author: "Radiohead" })).toBe("Radiohead");
+	});
+
+	it("returns an empty string when nothing is usable", () => {
+		expect(buildAutoplaySeed({})).toBe("");
 	});
 });

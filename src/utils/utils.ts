@@ -93,6 +93,28 @@ export function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Builds a clean autoplay search seed from a finished track.
+ *
+ * Raw `author` values from YouTube-sourced tracks are often the auto-generated
+ * channel name (e.g. `"<Artist> - Topic"`, `"<Artist>VEVO"`), which loops the
+ * follow-up search back onto the same channel. We strip that noise and, when an
+ * artist name survives, combine it with the title for a stronger recommendation
+ * seed. Falls back to the raw title when nothing useful remains.
+ */
+export function buildAutoplaySeed(track: { author?: string; title?: string }): string {
+	const artist = (track.author ?? "")
+		.replace(/\s*-\s*topic$/i, "")
+		.replace(/vevo\b/gi, "")
+		.replace(/\bofficial\b/gi, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	const title = (track.title ?? "").trim();
+
+	if (artist && title) return `${artist} ${title}`;
+	return artist || title;
+}
+
 /** Fisher-Yates in-place shuffle. */
 export function shuffleArray<T>(array: T[]): T[] {
 	for (let i = array.length - 1; i > 0; i--) {

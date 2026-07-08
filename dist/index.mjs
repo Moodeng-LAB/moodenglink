@@ -143,6 +143,12 @@ function clamp(value, min, max) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function buildAutoplaySeed(track) {
+  const artist = (track.author ?? "").replace(/\s*-\s*topic$/i, "").replace(/vevo\b/gi, "").replace(/\bofficial\b/gi, "").replace(/\s+/g, " ").trim();
+  const title = (track.title ?? "").trim();
+  if (artist && title) return `${artist} ${title}`;
+  return artist || title;
+}
 function shuffleArray(array) {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -1295,7 +1301,7 @@ var Moodenglink = class extends EventEmitter {
    * Uses the source of the finished track to seed a fresh search.
    */
   async handleAutoplay(player, previous) {
-    const seed = previous.author || previous.title;
+    const seed = buildAutoplaySeed(previous);
     if (!seed) return false;
     const platform = previous.sourceName || this.options.defaultSearchPlatform;
     const res = await this.search({ query: seed, source: platform }, previous.requester).catch(() => null);
@@ -1501,6 +1507,7 @@ export {
   SearchPrefixes,
   Structure,
   TTLCache,
+  buildAutoplaySeed,
   buildSearchIdentifier,
   buildTrack,
   clamp,

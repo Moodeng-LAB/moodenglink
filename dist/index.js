@@ -48,6 +48,7 @@ __export(index_exports, {
   SearchPrefixes: () => SearchPrefixes,
   Structure: () => Structure,
   TTLCache: () => TTLCache,
+  buildAutoplaySeed: () => buildAutoplaySeed,
   buildSearchIdentifier: () => buildSearchIdentifier,
   buildTrack: () => buildTrack,
   clamp: () => clamp,
@@ -209,6 +210,12 @@ function clamp(value, min, max) {
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function buildAutoplaySeed(track) {
+  const artist = (track.author ?? "").replace(/\s*-\s*topic$/i, "").replace(/vevo\b/gi, "").replace(/\bofficial\b/gi, "").replace(/\s+/g, " ").trim();
+  const title = (track.title ?? "").trim();
+  if (artist && title) return `${artist} ${title}`;
+  return artist || title;
 }
 function shuffleArray(array) {
   for (let i = array.length - 1; i > 0; i--) {
@@ -1362,7 +1369,7 @@ var Moodenglink = class extends import_node_events.EventEmitter {
    * Uses the source of the finished track to seed a fresh search.
    */
   async handleAutoplay(player, previous) {
-    const seed = previous.author || previous.title;
+    const seed = buildAutoplaySeed(previous);
     if (!seed) return false;
     const platform = previous.sourceName || this.options.defaultSearchPlatform;
     const res = await this.search({ query: seed, source: platform }, previous.requester).catch(() => null);
@@ -1569,6 +1576,7 @@ var version = "1.0.0";
   SearchPrefixes,
   Structure,
   TTLCache,
+  buildAutoplaySeed,
   buildSearchIdentifier,
   buildTrack,
   clamp,

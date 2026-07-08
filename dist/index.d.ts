@@ -1129,6 +1129,19 @@ declare function formatDuration(ms: number): string;
 declare function clamp(value: number, min: number, max: number): number;
 /** Resolves after `ms` milliseconds. */
 declare function sleep(ms: number): Promise<void>;
+/**
+ * Builds a clean autoplay search seed from a finished track.
+ *
+ * Raw `author` values from YouTube-sourced tracks are often the auto-generated
+ * channel name (e.g. `"<Artist> - Topic"`, `"<Artist>VEVO"`), which loops the
+ * follow-up search back onto the same channel. We strip that noise and, when an
+ * artist name survives, combine it with the title for a stronger recommendation
+ * seed. Falls back to the raw title when nothing useful remains.
+ */
+declare function buildAutoplaySeed(track: {
+    author?: string;
+    title?: string;
+}): string;
 /** Fisher-Yates in-place shuffle. */
 declare function shuffleArray<T>(array: T[]): T[];
 
@@ -1158,4 +1171,4 @@ declare class TTLCache<K, V> {
 
 declare const version = "1.0.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };

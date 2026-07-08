@@ -22,7 +22,7 @@ import type {
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
 import { TTLCache } from "../utils/cache";
-import { buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
+import { buildAutoplaySeed, buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
 import { Node } from "./Node";
 import { Player } from "./Player";
 import { Structure } from "./Structure";
@@ -216,7 +216,7 @@ export class Moodenglink extends EventEmitter {
 	 * Uses the source of the finished track to seed a fresh search.
 	 */
 	public async handleAutoplay(player: Player, previous: Track): Promise<boolean> {
-		const seed = previous.author || previous.title;
+		const seed = buildAutoplaySeed(previous);
 		if (!seed) return false;
 
 		const platform = (previous.sourceName as SearchPlatform) || this.options.defaultSearchPlatform;
