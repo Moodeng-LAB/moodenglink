@@ -43,6 +43,14 @@
   ],
   "author": "Moodeng Lab",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Moodeng-LAB/moodenglink.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Moodeng-LAB/moodenglink/issues"
+  },
+  "homepage": "https://github.com/Moodeng-LAB/moodenglink#readme",
   "dependencies": {
     "@discordjs/collection": "^2.1.1",
     "ws": "^8.18.0"
