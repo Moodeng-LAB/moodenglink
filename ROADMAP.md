@@ -59,6 +59,7 @@ Last updated: 2026-07-06
 - ✅ **Release automation** — [changesets](https://github.com/changesets/changesets) +
       `.github/workflows/release.yml`: contributors add a changeset, the workflow opens a
       "Version Packages" PR, and merging it publishes to npm (public, with provenance)
+- ✅ **Published to npm** — `moodenglink@1.0.0` live (`npm install moodenglink`)
 
 ---
 
@@ -70,8 +71,7 @@ Last updated: 2026-07-06
 
 ## 📋 Planned (next up)
 
-- 📋 **First 1.0.0 publish** — one-time bootstrap (see Releasing below); after that
-      the changesets flow drives every release.
+- _Nothing actively planned — `1.0.0` is live on npm; releases now run via changesets._
 
 ## 🚫 Not applicable (by architecture)
 
