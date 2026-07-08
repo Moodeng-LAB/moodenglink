@@ -12,7 +12,6 @@ concurrency:
 permissions:
   contents: write # create the "Version Packages" PR / push tags
   pull-requests: write # open & update the release PR
-  id-token: write # npm provenance (OIDC)
 
 jobs:
   release:
@@ -46,4 +45,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
