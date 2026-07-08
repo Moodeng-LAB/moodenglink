@@ -1,5 +1,10 @@
 # 🎧 Moodenglink
 
+[![npm version](https://img.shields.io/npm/v/moodenglink.svg)](https://www.npmjs.com/package/moodenglink)
+[![npm downloads](https://img.shields.io/npm/dm/moodenglink.svg)](https://www.npmjs.com/package/moodenglink)
+[![CI](https://github.com/Moodeng-LAB/moodenglink/actions/workflows/build.yml/badge.svg)](https://github.com/Moodeng-LAB/moodenglink/actions/workflows/build.yml)
+[![license](https://img.shields.io/npm/l/moodenglink.svg)](./LICENSE)
+
 A powerful, modern **Lavalink v4** client for Node.js — inspired by
 [Sonatica](https://github.com/Pastel-Dream/sonatica), [Magmastream](https://github.com/Magmastream-NPM/magmastream),
 [Moonlink.js](https://github.com/Ecliptia/moonlink.js) and [Erela.js](https://github.com/MenuDocs/erela.js).
