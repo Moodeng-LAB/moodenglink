@@ -1,5 +1,12 @@
 # moodenglink
 
+## 1.0.3
+
+### Patch Changes
+
+- 804e6a8: Add `publishConfig.access=public` so the package is always published publicly,
+  independent of any local npm config.
+
 ## 1.0.2
 
 ### Patch Changes
