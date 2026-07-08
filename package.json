@@ -1,6 +1,6 @@
 {
   "name": "moodenglink",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A powerful, modern Lavalink v4 client for Node.js — inspired by Sonatica, Magmastream, Moonlink.js and Erela.js.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
