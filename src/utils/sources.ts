@@ -51,8 +51,8 @@ export function buildSearchIdentifier(query: string, platform: SearchPlatform = 
 	if (isUrl(query)) return query;
 
 	const trimmed = query.trim();
-	// Already prefixed (e.g. "ytsearch:foo") — respect it.
-	if (/^[a-z]+search:/i.test(trimmed) || trimmed.startsWith("ftts:")) return trimmed;
+	// Already prefixed (e.g. "ytsearch:foo", "sprec:seed_tracks=...") — respect it.
+	if (/^[a-z]+(search|rec):/i.test(trimmed) || trimmed.startsWith("ftts:")) return trimmed;
 
 	const prefix = SearchPrefixes[platform] ?? SearchPrefixes.youtube;
 	return `${prefix}:${trimmed}`;

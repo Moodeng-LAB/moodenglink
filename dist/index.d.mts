@@ -744,6 +744,8 @@ declare class Player {
     };
     /** How many consecutive voice reconnects have been attempted (reset on connect). */
     private voiceReconnectAttempts;
+    /** Guards against overlapping autoplay lookups when a queue drains rapidly. */
+    private autoplaying;
     constructor(manager: Moodenglink, options: PlayerOptions, node: Node);
     /** The track currently playing, if any. */
     get current(): Track | null;
@@ -862,6 +864,11 @@ interface ManagerOptions {
     shards?: number;
     /** Whether to queue a related track when the queue empties. Defaults to `false`. */
     autoPlay?: boolean;
+    /**
+     * How many of the top autoplay candidates to randomly sample from. Larger
+     * values add variety at the cost of relevance. Defaults to `5`.
+     */
+    autoplaySampleSize?: number;
     /** Whether to migrate players to a healthy node when one dies. Defaults to `true`. */
     autoMove?: boolean;
     /** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */
@@ -990,7 +997,11 @@ declare class Moodenglink extends EventEmitter {
     decodeTrack(encoded: string, requester?: unknown): Promise<Track>;
     /**
      * @internal Queues a related track when a queue ends (best-effort).
-     * Uses the source of the finished track to seed a fresh search.
+     *
+     * Draws candidates from the finished track's platform radio/recommendation
+     * feed (falling back to a cleaned seed search), filters out anything already
+     * heard or queued to avoid loops, then samples from the most-relevant head of
+     * the list for a little variety — much like Riffy's autoplay.
      */
     handleAutoplay(player: Player, previous: Track): Promise<boolean>;
     /**

@@ -102,7 +102,8 @@ async function play(guildId: string, voiceChannelId: string, textChannelId: stri
 | `send`                  | `(guildId, payload) => void`           | —              | Forwards OP4 voice payloads to Discord. **Required.** |
 | `clientId`              | `string`                               | —              | Bot user id (or pass to `init()`).                    |
 | `shards`                | `number`                               | `1`            | Total shard count.                                    |
-| `autoPlay`              | `boolean`                              | `false`        | Autoplay related tracks when the queue ends.          |
+| `autoPlay`              | `boolean`                              | `false`        | Autoplay related tracks (platform radio/recs) at queue end. |
+| `autoplaySampleSize`    | `number`                               | `5`            | How many top autoplay candidates to sample from for variety. |
 | `autoMove`              | `boolean`                              | `true`         | Migrate players when a node dies.                     |
 | `autoResume`            | `boolean`                              | `false`        | Restore players from `store` on node ready.           |
 | `defaultSearchPlatform` | `SearchPlatform`                       | `"youtube"`    | Default source for prefix-less queries.               |

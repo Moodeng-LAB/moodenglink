@@ -22,7 +22,8 @@ import type {
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
 import { TTLCache } from "../utils/cache";
-import { buildAutoplaySeed, buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
+import { buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
+import { resolveAutoplayCandidates, trackKeys } from "../utils/autoplay";
 import { Node } from "./Node";
 import { Player } from "./Player";
 import { Structure } from "./Structure";
@@ -213,20 +214,38 @@ export class Moodenglink extends EventEmitter {
 
 	/**
 	 * @internal Queues a related track when a queue ends (best-effort).
-	 * Uses the source of the finished track to seed a fresh search.
+	 *
+	 * Draws candidates from the finished track's platform radio/recommendation
+	 * feed (falling back to a cleaned seed search), filters out anything already
+	 * heard or queued to avoid loops, then samples from the most-relevant head of
+	 * the list for a little variety — much like Riffy's autoplay.
 	 */
 	public async handleAutoplay(player: Player, previous: Track): Promise<boolean> {
-		const seed = buildAutoplaySeed(previous);
-		if (!seed) return false;
+		if (!previous) return false;
+		const requester = previous.requester;
 
-		const platform = (previous.sourceName as SearchPlatform) || this.options.defaultSearchPlatform;
-		const res = await this.search({ query: seed, source: platform }, previous.requester).catch(() => null);
-		if (!res?.tracks.length) return false;
+		const candidates = await resolveAutoplayCandidates(this, previous, requester).catch(() => []);
+		if (!candidates.length) return false;
 
-		// Avoid replaying anything already heard or still queued.
-		const played = new Set<string>([previous.identifier, ...player.queue.previous.map((t) => t.identifier)]);
-		const next = res.tracks.find((t) => !played.has(t.identifier)) ?? res.tracks.find((t) => t.identifier !== previous.identifier);
-		if (!next) return false;
+		// Everything already heard, playing or still queued — never repeat it.
+		const seen = new Set<string>();
+		const mark = (track: Track | null | undefined) => {
+			if (track) for (const key of trackKeys(track)) seen.add(key);
+		};
+		mark(previous);
+		mark(player.queue.current);
+		for (const track of player.queue.previous) mark(track);
+		for (const item of player.queue) mark(item as Track);
+
+		const fresh = candidates.filter((t) => !trackKeys(t).some((key) => seen.has(key)));
+		const previousKeys = new Set(trackKeys(previous));
+		const pool = fresh.length ? fresh : candidates.filter((t) => !trackKeys(t).some((key) => previousKeys.has(key)));
+		if (!pool.length) return false;
+
+		// Bias toward the more-relevant head of the list, but keep it from feeling
+		// robotic by sampling within a small window.
+		const window = Math.max(1, Math.min(this.options.autoplaySampleSize ?? 5, pool.length));
+		const next = { ...pool[Math.floor(Math.random() * window)], requester };
 
 		player.queue.add(next);
 		await player.play();

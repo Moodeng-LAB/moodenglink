@@ -48,6 +48,11 @@ export interface ManagerOptions {
 	shards?: number;
 	/** Whether to queue a related track when the queue empties. Defaults to `false`. */
 	autoPlay?: boolean;
+	/**
+	 * How many of the top autoplay candidates to randomly sample from. Larger
+	 * values add variety at the cost of relevance. Defaults to `5`.
+	 */
+	autoplaySampleSize?: number;
 	/** Whether to migrate players to a healthy node when one dies. Defaults to `true`. */
 	autoMove?: boolean;
 	/** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */

@@ -68,6 +68,9 @@ export class Player {
 	/** How many consecutive voice reconnects have been attempted (reset on connect). */
 	private voiceReconnectAttempts = 0;
 
+	/** Guards against overlapping autoplay lookups when a queue drains rapidly. */
+	private autoplaying = false;
+
 	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
 		this.manager = manager;
 		this.node = node;
@@ -416,10 +419,16 @@ export class Player {
 			return;
 		}
 
-		// Autoplay a related track if enabled.
-		if ((this.autoplay || this.manager.options.autoPlay) && previous) {
-			const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
-			if (queued) return;
+		// Autoplay a related track if enabled. The guard stops a burst of rapid
+		// track-end events from firing several overlapping lookups.
+		if ((this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
+			this.autoplaying = true;
+			try {
+				const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
+				if (queued) return;
+			} finally {
+				this.autoplaying = false;
+			}
 		}
 
 		this.playing = false;

@@ -103,7 +103,7 @@ function isUrl(input) {
 function buildSearchIdentifier(query, platform = "youtube") {
   if (isUrl(query)) return query;
   const trimmed = query.trim();
-  if (/^[a-z]+search:/i.test(trimmed) || trimmed.startsWith("ftts:")) return trimmed;
+  if (/^[a-z]+(search|rec):/i.test(trimmed) || trimmed.startsWith("ftts:")) return trimmed;
   const prefix = SearchPrefixes[platform] ?? SearchPrefixes.youtube;
   return `${prefix}:${trimmed}`;
 }
@@ -223,6 +223,68 @@ function shuffleArray(array) {
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;
+}
+
+// src/utils/autoplay.ts
+function trackKeys(track) {
+  const keys = [];
+  if (track.identifier) keys.push(track.identifier);
+  if (track.uri) keys.push(track.uri);
+  return keys;
+}
+var search = async (manager, query, requester) => {
+  const res = await manager.search(query, requester).catch(() => null);
+  return res?.tracks ?? [];
+};
+var youtubeRadio = (manager, previous, requester) => {
+  const id = previous.identifier;
+  if (!id) return Promise.resolve([]);
+  const query = `https://www.youtube.com/watch?v=${id}&list=RD${id}`;
+  return search(manager, { query, source: "youtubemusic" }, requester);
+};
+var soundcloudRelated = (manager, previous, requester) => {
+  if (!previous.uri) return Promise.resolve([]);
+  const query = `${previous.uri.replace(/\/+$/, "")}/recommended`;
+  return search(manager, { query, source: "soundcloud" }, requester);
+};
+var spotifyRecommendations = (manager, previous, requester) => {
+  if (!previous.identifier) return Promise.resolve([]);
+  const query = `sprec:seed_tracks=${previous.identifier}`;
+  return search(manager, { query, source: "spotify" }, requester);
+};
+var deezerFlow = (manager, previous, requester) => {
+  if (!previous.identifier) return Promise.resolve([]);
+  const query = `dzrec:${previous.identifier}`;
+  return search(manager, { query, source: "deezer" }, requester);
+};
+var seedSearch = (manager, previous, requester) => {
+  const seed = buildAutoplaySeed(previous);
+  if (!seed) return Promise.resolve([]);
+  const source = previous.sourceName || manager.options.defaultSearchPlatform;
+  return search(manager, { query: seed, source }, requester);
+};
+function strategyChain(source) {
+  switch (source) {
+    case "youtube":
+    case "youtubemusic":
+      return [youtubeRadio, seedSearch];
+    case "soundcloud":
+      return [soundcloudRelated, seedSearch];
+    case "spotify":
+      return [spotifyRecommendations, seedSearch];
+    case "deezer":
+      return [deezerFlow, seedSearch];
+    default:
+      return [seedSearch];
+  }
+}
+async function resolveAutoplayCandidates(manager, previous, requester) {
+  const source = (previous.sourceName ?? "").toLowerCase();
+  for (const strategy of strategyChain(source)) {
+    const tracks = await strategy(manager, previous, requester).catch(() => []);
+    if (tracks.length) return tracks;
+  }
+  return [];
 }
 
 // src/utils/equalizers.ts
@@ -764,6 +826,8 @@ var Player = class _Player {
     this.voiceState = {};
     /** How many consecutive voice reconnects have been attempted (reset on connect). */
     this.voiceReconnectAttempts = 0;
+    /** Guards against overlapping autoplay lookups when a queue drains rapidly. */
+    this.autoplaying = false;
     this.manager = manager;
     this.node = node;
     this.guild = options.guild;
@@ -1049,9 +1113,14 @@ var Player = class _Player {
       await this.play().catch((error) => this.manager.emit("nodeError", this.node, error));
       return;
     }
-    if ((this.autoplay || this.manager.options.autoPlay) && previous) {
-      const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
-      if (queued) return;
+    if ((this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
+      this.autoplaying = true;
+      try {
+        const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
+        if (queued) return;
+      } finally {
+        this.autoplaying = false;
+      }
     }
     this.playing = false;
     this.queue.current = null;
@@ -1366,17 +1435,31 @@ var Moodenglink = class extends import_node_events.EventEmitter {
   /* ------------------------------ autoplay ------------------------------ */
   /**
    * @internal Queues a related track when a queue ends (best-effort).
-   * Uses the source of the finished track to seed a fresh search.
+   *
+   * Draws candidates from the finished track's platform radio/recommendation
+   * feed (falling back to a cleaned seed search), filters out anything already
+   * heard or queued to avoid loops, then samples from the most-relevant head of
+   * the list for a little variety — much like Riffy's autoplay.
    */
   async handleAutoplay(player, previous) {
-    const seed = buildAutoplaySeed(previous);
-    if (!seed) return false;
-    const platform = previous.sourceName || this.options.defaultSearchPlatform;
-    const res = await this.search({ query: seed, source: platform }, previous.requester).catch(() => null);
-    if (!res?.tracks.length) return false;
-    const played = /* @__PURE__ */ new Set([previous.identifier, ...player.queue.previous.map((t) => t.identifier)]);
-    const next = res.tracks.find((t) => !played.has(t.identifier)) ?? res.tracks.find((t) => t.identifier !== previous.identifier);
-    if (!next) return false;
+    if (!previous) return false;
+    const requester = previous.requester;
+    const candidates = await resolveAutoplayCandidates(this, previous, requester).catch(() => []);
+    if (!candidates.length) return false;
+    const seen = /* @__PURE__ */ new Set();
+    const mark = (track) => {
+      if (track) for (const key of trackKeys(track)) seen.add(key);
+    };
+    mark(previous);
+    mark(player.queue.current);
+    for (const track of player.queue.previous) mark(track);
+    for (const item of player.queue) mark(item);
+    const fresh = candidates.filter((t) => !trackKeys(t).some((key) => seen.has(key)));
+    const previousKeys = new Set(trackKeys(previous));
+    const pool = fresh.length ? fresh : candidates.filter((t) => !trackKeys(t).some((key) => previousKeys.has(key)));
+    if (!pool.length) return false;
+    const window = Math.max(1, Math.min(this.options.autoplaySampleSize ?? 5, pool.length));
+    const next = { ...pool[Math.floor(Math.random() * window)], requester };
     player.queue.add(next);
     await player.play();
     return true;
@@ -1461,8 +1544,8 @@ var Moodenglink = class extends import_node_events.EventEmitter {
   /* -------------------------- unresolved tracks -------------------------- */
   /** Resolves an {@link UnresolvedQuery} into a playable {@link Track}. */
   async resolve(query) {
-    const search = `${query.author ? `${query.author} - ` : ""}${query.title}`;
-    const res = await this.search({ query: query.uri ?? search, source: query.source }, query.requester).catch(() => null);
+    const search2 = `${query.author ? `${query.author} - ` : ""}${query.title}`;
+    const res = await this.search({ query: query.uri ?? search2, source: query.source }, query.requester).catch(() => null);
     if (!res?.tracks.length) return null;
     return pickClosestTrack(res.tracks, query) ?? res.tracks[0];
   }

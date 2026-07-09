@@ -111,6 +111,76 @@ describe("Moodenglink players", () => {
 	});
 });
 
+describe("Moodenglink.handleAutoplay", () => {
+	function buildTrack(overrides: Record<string, unknown> = {}) {
+		return {
+			encoded: "PREV",
+			title: "Never Gonna Give You Up",
+			author: "Rick Astley",
+			identifier: "id-1",
+			uri: "https://youtu.be/dQw4w9WgXcQ",
+			sourceName: "youtube",
+			requester: "userA",
+			duration: 213000,
+			...overrides,
+		} as never;
+	}
+
+	it("queues a fresh related track and preserves the requester", async () => {
+		const { manager } = buildManager();
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+
+		const searchSpy = vi.spyOn(manager, "search").mockResolvedValue({
+			loadType: "search",
+			tracks: [{ identifier: "id-2", uri: "u2", encoded: "E2", requester: undefined } as never],
+			playlist: null,
+			exception: null,
+		});
+		const playSpy = vi.spyOn(player, "play").mockResolvedValue(player);
+
+		const previous = buildTrack();
+		const ok = await manager.handleAutoplay(player, previous);
+
+		expect(ok).toBe(true);
+		// YouTube source should reach for the RD radio mix first.
+		expect(searchSpy.mock.calls[0][0]).toMatchObject({ query: expect.stringContaining("list=RD") });
+		expect(player.queue).toHaveLength(1);
+		expect((player.queue[0] as { requester: unknown }).requester).toBe("userA");
+		expect(playSpy).toHaveBeenCalled();
+	});
+
+	it("never repeats the finished track or anything already heard", async () => {
+		const { manager } = buildManager();
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		player.queue.previous = [buildTrack({ identifier: "heard", uri: "u-heard" })];
+
+		vi.spyOn(manager, "search").mockResolvedValue({
+			loadType: "search",
+			tracks: [
+				{ identifier: "id-1", uri: "https://youtu.be/dQw4w9WgXcQ", encoded: "SAME" } as never, // == previous
+				{ identifier: "heard", uri: "u-heard", encoded: "HEARD" } as never, // already played
+				{ identifier: "id-new", uri: "u-new", encoded: "NEW" } as never,
+			],
+			playlist: null,
+			exception: null,
+		});
+		vi.spyOn(player, "play").mockResolvedValue(player);
+
+		await manager.handleAutoplay(player, buildTrack());
+		expect((player.queue[0] as { identifier: string }).identifier).toBe("id-new");
+	});
+
+	it("returns false when no candidates come back", async () => {
+		const { manager } = buildManager();
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		vi.spyOn(manager, "search").mockResolvedValue({ loadType: "empty", tracks: [], playlist: null, exception: null });
+		const playSpy = vi.spyOn(player, "play").mockResolvedValue(player);
+
+		expect(await manager.handleAutoplay(player, buildTrack())).toBe(false);
+		expect(playSpy).not.toHaveBeenCalled();
+	});
+});
+
 describe("Moodenglink.updateVoiceState", () => {
 	let ctx: ReturnType<typeof buildManager>;
 
