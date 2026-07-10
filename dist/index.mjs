@@ -404,8 +404,14 @@ var Rest = class {
   }
   /**
    * Performs an authenticated request and parses the JSON body (if any).
-   * Network-level failures are retried up to `retryAmount` times; HTTP errors
-   * are surfaced with Lavalink's stack trace (requested via `?trace=true`).
+   *
+   * Transient network/timeout failures are retried up to `retryAmount` times
+   * with an incremental backoff (`retryDelay * attempt`, capped) so a struggling
+   * node isn't hammered. Only idempotent requests are retried — `GET` by default,
+   * or any call that opts in via `options.idempotent` — because replaying a
+   * non-idempotent write (e.g. `PATCH /players`) whose response was merely lost
+   * could restart or duplicate playback. HTTP (4xx/5xx) errors are never retried
+   * and are surfaced with Lavalink's stack trace (requested via `?trace=true`).
    */
   async request(endpoint, options = {}) {
     const method = options.method ?? "GET";
@@ -422,7 +428,8 @@ var Rest = class {
       "Content-Type": "application/json",
       ...options.headers
     };
-    const maxAttempts = Math.max(1, this.node.options.retryAmount);
+    const canRetry = options.idempotent ?? method === "GET";
+    const maxAttempts = canRetry ? Math.max(1, this.node.options.retryAmount) : 1;
     let lastError;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const controller = new AbortController();
@@ -441,6 +448,12 @@ var Rest = class {
       } catch (error) {
         lastError = error;
         if (error instanceof RestError || attempt >= maxAttempts) throw error;
+        const abort = error?.name === "AbortError";
+        this.node.manager.emit(
+          "debug",
+          `[Rest ${this.node.id}] ${method} ${endpoint} ${abort ? "timed out" : "failed"} (${error?.message ?? error}); retry ${attempt}/${maxAttempts - 1}.`
+        );
+        await sleep(Math.min(this.node.options.retryDelay * attempt, 15e3));
       } finally {
         clearTimeout(timeout);
       }
@@ -790,8 +803,6 @@ var Player = class _Player {
         self_deaf: this.selfDeafen
       }
     });
-    this.state = "CONNECTED";
-    this.connected = true;
     return this;
   }
   /** Leaves the voice channel but keeps the player and queue alive. */
@@ -1011,7 +1022,7 @@ var Player = class _Player {
     this.timestamp = state.time;
     if (state.connected) {
       this.voiceReconnectAttempts = 0;
-      if (this.state === "RESUMING") this.state = "CONNECTED";
+      if (this.state === "RESUMING" || this.state === "CONNECTING") this.state = "CONNECTED";
     }
     this.manager.emit("playerStateUpdate", this);
   }
@@ -1321,11 +1332,21 @@ var Moodenglink = class extends EventEmitter {
     const source = (typeof query === "string" ? void 0 : query.source) ?? this.options.defaultSearchPlatform;
     const identifier = buildSearchIdentifier(raw, source);
     const cached = this.searchCache?.get(identifier);
-    if (cached) return { ...cached, tracks: cached.tracks.map((t) => ({ ...t, requester })) };
+    if (cached) {
+      return {
+        ...cached,
+        playlist: cached.playlist ? { ...cached.playlist } : cached.playlist,
+        tracks: cached.tracks.map((t) => ({ ...structuredClone(t), requester }))
+      };
+    }
     const res = await node.rest.loadTracks(identifier);
     const result = this.resolveLoadResult(res, requester);
     if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || result.loadType === "playlist")) {
-      this.searchCache.set(identifier, result);
+      this.searchCache.set(identifier, {
+        ...result,
+        playlist: result.playlist ? { ...result.playlist } : result.playlist,
+        tracks: result.tracks.map((t) => structuredClone({ ...t, requester: void 0 }))
+      });
     }
     return result;
   }
@@ -1375,8 +1396,9 @@ var Moodenglink = class extends EventEmitter {
    */
   async handleAutoplay(player, previous) {
     if (!previous) return false;
-    const requester = previous.requester;
-    const candidates = await resolveAutoplayCandidates(this, previous, requester).catch(() => []);
+    const seedRequester = previous.requester;
+    const requester = "autoplayRequester" in this.options ? this.options.autoplayRequester : previous.requester;
+    const candidates = await resolveAutoplayCandidates(this, previous, seedRequester).catch(() => []);
     if (!candidates.length) return false;
     const seen = /* @__PURE__ */ new Set();
     const mark = (track) => {
@@ -1458,7 +1480,12 @@ var Moodenglink = class extends EventEmitter {
         if (data.current) player.queue.current = data.current;
         if (Array.isArray(data.previous)) player.queue.previous = data.previous;
         player.connect();
-        if (player.queue.current) await player.play({ track: player.queue.current });
+        if (player.queue.current) {
+          const current = player.queue.current;
+          const saved = typeof data.position === "number" ? data.position : 0;
+          const startTime = current.isStream ? 0 : Math.max(0, Math.min(saved, current.duration || saved));
+          await player.play({ track: current, startTime });
+        }
         this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
       } catch {
       }

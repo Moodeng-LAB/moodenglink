@@ -471,6 +471,14 @@ interface RequestOptions {
     body?: unknown;
     query?: Record<string, string | number | boolean | undefined>;
     headers?: Record<string, string>;
+    /**
+     * Whether a transient (network/timeout) failure may be safely retried.
+     * Defaults to `true` for `GET` only — non-`GET` requests are not retried by
+     * default because a lost response (e.g. an aborted `PATCH /players`) could
+     * otherwise re-issue a state change like play/seek. Override per call when a
+     * write is genuinely idempotent.
+     */
+    idempotent?: boolean;
 }
 /** The voice state Lavalink needs to establish a connection. */
 interface LavalinkVoiceState {
@@ -525,8 +533,14 @@ declare class Rest {
     constructor(node: Node);
     /**
      * Performs an authenticated request and parses the JSON body (if any).
-     * Network-level failures are retried up to `retryAmount` times; HTTP errors
-     * are surfaced with Lavalink's stack trace (requested via `?trace=true`).
+     *
+     * Transient network/timeout failures are retried up to `retryAmount` times
+     * with an incremental backoff (`retryDelay * attempt`, capped) so a struggling
+     * node isn't hammered. Only idempotent requests are retried — `GET` by default,
+     * or any call that opts in via `options.idempotent` — because replaying a
+     * non-idempotent write (e.g. `PATCH /players`) whose response was merely lost
+     * could restart or duplicate playback. HTTP (4xx/5xx) errors are never retried
+     * and are surfaced with Lavalink's stack trace (requested via `?trace=true`).
      */
     request<T = unknown>(endpoint: string, options?: RequestOptions): Promise<T>;
     loadTracks(identifier: string): Promise<{
@@ -869,6 +883,13 @@ interface ManagerOptions {
      * values add variety at the cost of relevance. Defaults to `5`.
      */
     autoplaySampleSize?: number;
+    /**
+     * The `requester` stamped on autoplay-queued tracks. Set to your client user,
+     * `null`, or any marker so panels don't credit an autoplayed pick to whoever
+     * requested the previous track. When omitted, the previous track's requester
+     * is inherited (backwards-compatible behaviour).
+     */
+    autoplayRequester?: unknown;
     /** Whether to migrate players to a healthy node when one dies. Defaults to `true`. */
     autoMove?: boolean;
     /** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */

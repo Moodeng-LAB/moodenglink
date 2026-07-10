@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Moodenglink } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
+import { Player } from "../src/classes/Player";
+import { MemoryStore } from "../src/classes/stores";
 import { makeStats, makeTrackData } from "./helpers";
 
 function buildManager(extra: Record<string, unknown> = {}) {
@@ -95,6 +97,21 @@ describe("Moodenglink.search", () => {
 		expect(first.tracks[0].encoded).toBe("E1");
 		expect(second.tracks[0].requester).toBe("userB"); // requester re-stamped
 	});
+
+	it("isolates cached entries so a consumer mutation can't bleed into later hits", async () => {
+		const { manager, node } = buildManager({ searchCache: true });
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({ loadType: "track", data: makeTrackData({}, "E1") });
+
+		const first = await manager.search("q", "userA");
+		// Mutate a nested field on the returned track…
+		(first.tracks[0].pluginInfo as Record<string, unknown>).tampered = true;
+		(first.tracks[0] as Record<string, unknown>).title = "HACKED";
+
+		// …a later cache hit must be pristine, not poisoned.
+		const second = await manager.search("q", "userB");
+		expect((second.tracks[0].pluginInfo as Record<string, unknown>).tampered).toBeUndefined();
+		expect(second.tracks[0].title).toBe("Never Gonna Give You Up");
+	});
 });
 
 describe("Moodenglink players", () => {
@@ -170,6 +187,36 @@ describe("Moodenglink.handleAutoplay", () => {
 		expect((player.queue[0] as { identifier: string }).identifier).toBe("id-new");
 	});
 
+	it("stamps a configured autoplayRequester instead of inheriting the previous one", async () => {
+		const { manager } = buildManager({ autoplayRequester: "AUTOPLAY" });
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		vi.spyOn(manager, "search").mockResolvedValue({
+			loadType: "search",
+			tracks: [{ identifier: "id-2", uri: "u2", encoded: "E2" } as never],
+			playlist: null,
+			exception: null,
+		});
+		vi.spyOn(player, "play").mockResolvedValue(player);
+
+		await manager.handleAutoplay(player, buildTrack());
+		expect((player.queue[0] as { requester: unknown }).requester).toBe("AUTOPLAY");
+	});
+
+	it("honours an explicit null autoplayRequester", async () => {
+		const { manager } = buildManager({ autoplayRequester: null });
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		vi.spyOn(manager, "search").mockResolvedValue({
+			loadType: "search",
+			tracks: [{ identifier: "id-2", uri: "u2", encoded: "E2" } as never],
+			playlist: null,
+			exception: null,
+		});
+		vi.spyOn(player, "play").mockResolvedValue(player);
+
+		await manager.handleAutoplay(player, buildTrack());
+		expect((player.queue[0] as { requester: unknown }).requester).toBeNull();
+	});
+
 	it("returns false when no candidates come back", async () => {
 		const { manager } = buildManager();
 		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
@@ -178,6 +225,62 @@ describe("Moodenglink.handleAutoplay", () => {
 
 		expect(await manager.handleAutoplay(player, buildTrack())).toBe(false);
 		expect(playSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("Moodenglink.resumePlayers", () => {
+	function seedTrack(overrides: Record<string, unknown> = {}) {
+		return { encoded: "ENC", identifier: "id-1", uri: "u", duration: 213000, isStream: false, position: 0, pluginInfo: {}, userData: {}, ...overrides };
+	}
+
+	async function seedStore(store: MemoryStore, node: Node, data: Record<string, unknown>) {
+		await store.set(
+			"moodenglink:player:g1",
+			JSON.stringify({
+				guild: "g1",
+				voiceChannel: "vc1",
+				node: node.id,
+				volume: 100,
+				repeatMode: 0,
+				autoplay: false,
+				queue: [],
+				previous: [],
+				...data,
+			}),
+		);
+	}
+
+	it("resumes playback from the persisted position, not from 0", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, { position: 90_000, current: seedTrack() });
+		const playSpy = vi.spyOn(Player.prototype, "play").mockResolvedValue(undefined as never);
+
+		await manager.resumePlayers(node);
+
+		expect(playSpy).toHaveBeenCalledWith({ track: expect.objectContaining({ encoded: "ENC" }), startTime: 90_000 });
+	});
+
+	it("clamps a persisted position past the track duration", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, { position: 999_999_999, current: seedTrack({ duration: 213_000 }) });
+		const playSpy = vi.spyOn(Player.prototype, "play").mockResolvedValue(undefined as never);
+
+		await manager.resumePlayers(node);
+
+		expect(playSpy).toHaveBeenCalledWith(expect.objectContaining({ startTime: 213_000 }));
+	});
+
+	it("resumes a live stream from 0", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, { position: 90_000, current: seedTrack({ isStream: true }) });
+		const playSpy = vi.spyOn(Player.prototype, "play").mockResolvedValue(undefined as never);
+
+		await manager.resumePlayers(node);
+
+		expect(playSpy).toHaveBeenCalledWith(expect.objectContaining({ startTime: 0 }));
 	});
 });
 

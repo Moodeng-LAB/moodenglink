@@ -158,15 +158,28 @@ export class Moodenglink extends EventEmitter {
 		const identifier = buildSearchIdentifier(raw, source as SearchPlatform);
 
 		// Serve from cache when possible — but always stamp the current requester.
+		// Deep-clone so a consumer mutating `track.info`/nested fields can never
+		// bleed into the shared cache entry (and every other guild's next hit).
 		const cached = this.searchCache?.get(identifier);
-		if (cached) return { ...cached, tracks: cached.tracks.map((t) => ({ ...t, requester })) };
+		if (cached) {
+			return {
+				...cached,
+				playlist: cached.playlist ? { ...cached.playlist } : cached.playlist,
+				tracks: cached.tracks.map((t) => ({ ...structuredClone(t), requester })),
+			};
+		}
 
 		const res = (await node.rest.loadTracks(identifier)) as { loadType: LoadType; data: unknown };
 		const result = this.resolveLoadResult(res, requester);
 
-		// Only cache useful, deterministic results.
+		// Only cache useful, deterministic results. Store a requester-free deep
+		// clone so the entry is independent of the copy handed back to the caller.
 		if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || result.loadType === "playlist")) {
-			this.searchCache.set(identifier, result);
+			this.searchCache.set(identifier, {
+				...result,
+				playlist: result.playlist ? { ...result.playlist } : result.playlist,
+				tracks: result.tracks.map((t) => structuredClone({ ...t, requester: undefined })),
+			});
 		}
 		return result;
 	}
@@ -222,9 +235,14 @@ export class Moodenglink extends EventEmitter {
 	 */
 	public async handleAutoplay(player: Player, previous: Track): Promise<boolean> {
 		if (!previous) return false;
-		const requester = previous.requester;
+		// Candidate lookups still seed from whoever requested the finished track,
+		// but the queued track is stamped with `autoplayRequester` when configured
+		// (e.g. the client user, or `null`) so panels don't credit an autoplayed
+		// pick to a user who never asked for it. Falls back to inheriting.
+		const seedRequester = previous.requester;
+		const requester = "autoplayRequester" in this.options ? this.options.autoplayRequester : previous.requester;
 
-		const candidates = await resolveAutoplayCandidates(this, previous, requester).catch(() => []);
+		const candidates = await resolveAutoplayCandidates(this, previous, seedRequester).catch(() => []);
 		if (!candidates.length) return false;
 
 		// Everything already heard, playing or still queued — never repeat it.
@@ -329,7 +347,14 @@ export class Moodenglink extends EventEmitter {
 				if (Array.isArray(data.previous)) player.queue.previous = data.previous as Track[];
 
 				player.connect();
-				if (player.queue.current) await player.play({ track: player.queue.current });
+				if (player.queue.current) {
+					// Resume from where playback left off, not from 0. Skip for live
+					// streams (no meaningful position) and clamp within the track.
+					const current = player.queue.current;
+					const saved = typeof data.position === "number" ? data.position : 0;
+					const startTime = current.isStream ? 0 : Math.max(0, Math.min(saved, current.duration || saved));
+					await player.play({ track: current, startTime });
+				}
 				this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
 			} catch {
 				/* ignore malformed entries */

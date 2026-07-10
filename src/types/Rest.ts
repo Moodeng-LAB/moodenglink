@@ -14,6 +14,14 @@ export interface RequestOptions {
 	body?: unknown;
 	query?: Record<string, string | number | boolean | undefined>;
 	headers?: Record<string, string>;
+	/**
+	 * Whether a transient (network/timeout) failure may be safely retried.
+	 * Defaults to `true` for `GET` only — non-`GET` requests are not retried by
+	 * default because a lost response (e.g. an aborted `PATCH /players`) could
+	 * otherwise re-issue a state change like play/seek. Override per call when a
+	 * write is genuinely idempotent.
+	 */
+	idempotent?: boolean;
 }
 
 /** The voice state Lavalink needs to establish a connection. */

@@ -6,6 +6,7 @@
 import type { NodeInfo, NodeStats } from "../types/Node";
 import type { LyricsResult, SponsorBlockCategory } from "../types/Op";
 import type { LavalinkPlayer, RequestOptions, UpdatePlayerBody } from "../types/Rest";
+import { sleep } from "../utils/utils";
 import type { Node } from "./Node";
 
 export class Rest {
@@ -21,8 +22,14 @@ export class Rest {
 
 	/**
 	 * Performs an authenticated request and parses the JSON body (if any).
-	 * Network-level failures are retried up to `retryAmount` times; HTTP errors
-	 * are surfaced with Lavalink's stack trace (requested via `?trace=true`).
+	 *
+	 * Transient network/timeout failures are retried up to `retryAmount` times
+	 * with an incremental backoff (`retryDelay * attempt`, capped) so a struggling
+	 * node isn't hammered. Only idempotent requests are retried — `GET` by default,
+	 * or any call that opts in via `options.idempotent` — because replaying a
+	 * non-idempotent write (e.g. `PATCH /players`) whose response was merely lost
+	 * could restart or duplicate playback. HTTP (4xx/5xx) errors are never retried
+	 * and are surfaced with Lavalink's stack trace (requested via `?trace=true`).
 	 */
 	public async request<T = unknown>(endpoint: string, options: RequestOptions = {}): Promise<T> {
 		const method = options.method ?? "GET";
@@ -42,7 +49,10 @@ export class Rest {
 			...options.headers,
 		};
 
-		const maxAttempts = Math.max(1, this.node.options.retryAmount);
+		// Retrying a non-idempotent write whose response was lost can re-issue the
+		// state change (e.g. restart the current track), so only GET retries by default.
+		const canRetry = options.idempotent ?? method === "GET";
+		const maxAttempts = canRetry ? Math.max(1, this.node.options.retryAmount) : 1;
 		let lastError: unknown;
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -68,6 +78,13 @@ export class Rest {
 				lastError = error;
 				// Only retry transient network/abort failures, never HTTP 4xx/5xx bodies.
 				if (error instanceof RestError || attempt >= maxAttempts) throw error;
+				const abort = (error as Error)?.name === "AbortError";
+				this.node.manager.emit(
+					"debug",
+					`[Rest ${this.node.id}] ${method} ${endpoint} ${abort ? "timed out" : "failed"} (${(error as Error)?.message ?? error}); retry ${attempt}/${maxAttempts - 1}.`,
+				);
+				// Incremental backoff, capped so a large retryAmount can't stall for minutes.
+				await sleep(Math.min(this.node.options.retryDelay * attempt, 15_000));
 			} finally {
 				clearTimeout(timeout);
 			}

@@ -53,6 +53,13 @@ export interface ManagerOptions {
 	 * values add variety at the cost of relevance. Defaults to `5`.
 	 */
 	autoplaySampleSize?: number;
+	/**
+	 * The `requester` stamped on autoplay-queued tracks. Set to your client user,
+	 * `null`, or any marker so panels don't credit an autoplayed pick to whoever
+	 * requested the previous track. When omitted, the previous track's requester
+	 * is inherited (backwards-compatible behaviour).
+	 */
+	autoplayRequester?: unknown;
 	/** Whether to migrate players to a healthy node when one dies. Defaults to `true`. */
 	autoMove?: boolean;
 	/** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */

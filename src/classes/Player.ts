@@ -96,6 +96,10 @@ export class Player {
 	public connect(): this {
 		if (!this.voiceChannel) throw new Error(`Player "${this.guild}" has no voice channel set.`);
 
+		// Stay "CONNECTING" until Lavalink reports a live voice connection via the
+		// first playerUpdate — marking `connected`/"CONNECTED" here would be an
+		// optimistic guess (Discord hasn't confirmed the voice server yet) and
+		// leaves the flag stuck `true` if the handshake never completes.
 		this.state = "CONNECTING";
 		this.manager.options.send(this.guild, {
 			op: 4,
@@ -106,8 +110,6 @@ export class Player {
 				self_deaf: this.selfDeafen,
 			},
 		});
-		this.state = "CONNECTED";
-		this.connected = true;
 		return this;
 	}
 
@@ -372,10 +374,12 @@ export class Player {
 		this.connected = state.connected;
 		this.ping = state.ping;
 		this.timestamp = state.time;
-		// A healthy voice connection clears the reconnect counter.
+		// A healthy voice connection clears the reconnect counter and promotes the
+		// player out of its pending states — this is the authoritative signal that
+		// the voice handshake actually completed.
 		if (state.connected) {
 			this.voiceReconnectAttempts = 0;
-			if (this.state === "RESUMING") this.state = "CONNECTED";
+			if (this.state === "RESUMING" || this.state === "CONNECTING") this.state = "CONNECTED";
 		}
 		this.manager.emit("playerStateUpdate", this);
 	}

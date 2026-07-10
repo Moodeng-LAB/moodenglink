@@ -70,6 +70,19 @@ describe("Player voice hardening", () => {
 		expect(send).toHaveBeenCalledTimes(2);
 	});
 
+	it("stays CONNECTING (not optimistically connected) until the node confirms voice", () => {
+		const { player, send } = buildPlayer();
+		player.connect(); // sends OP4 but Discord/Lavalink hasn't confirmed the voice server yet
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(player.state).toBe("CONNECTING");
+		expect(player.connected).toBe(false);
+
+		// The first connected playerUpdate is the authoritative signal.
+		player.updateState({ time: 1, position: 0, connected: true, ping: 5 });
+		expect(player.state).toBe("CONNECTED");
+		expect(player.connected).toBe(true);
+	});
+
 	it("resets the attempt counter once the voice connection is healthy", async () => {
 		vi.useFakeTimers();
 		const { player, send } = buildPlayer({ voiceReconnectTries: 2, voiceReconnectDelay: 10 });
