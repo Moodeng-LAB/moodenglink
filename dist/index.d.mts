@@ -741,9 +741,19 @@ declare class Player {
     readonly queue: Queue;
     readonly filters: Filters;
     volume: number;
-    position: number;
     ping: number;
     timestamp: number;
+    /** Last position reported by the node, and the wall-clock time we received it. */
+    private _position;
+    private _positionUpdatedAt;
+    /**
+     * The current playback position in ms. Lavalink only pushes a fresh position
+     * every few seconds, so while a track is actively playing this interpolates
+     * from the last report using elapsed wall-clock time (clamped to the track
+     * duration) — giving an accurate value for progress bars between updates.
+     */
+    get position(): number;
+    set position(value: number);
     playing: boolean;
     paused: boolean;
     connected: boolean;
@@ -762,6 +772,13 @@ declare class Player {
     private voiceReconnectAttempts;
     /** Guards against overlapping autoplay lookups when a queue drains rapidly. */
     private autoplaying;
+    /**
+     * Why the current track is about to end, when we caused it. Lavalink reports
+     * both a manual `stop()` and a `skip()` as reason `"stopped"`, so we record the
+     * intent here to tell them apart: a stop ends playback cleanly (no repeat, no
+     * autoplay), a skip advances to the next track. Cleared as soon as it's read.
+     */
+    private endIntent;
     constructor(manager: Moodenglink, options: PlayerOptions, node: Node);
     /** The track currently playing, if any. */
     get current(): Track | null;
@@ -822,6 +839,8 @@ declare class Player {
     handleTrackStart(payload: TrackStartEvent): void;
     /** @internal */
     handleTrackEnd(payload: TrackEndEvent): Promise<void>;
+    /** Pushes a just-finished track onto the front of the history, capped at 50. */
+    private recordPrevious;
     private advance;
     /** @internal */
     handleTrackStuck(payload: TrackStuckEvent): void;

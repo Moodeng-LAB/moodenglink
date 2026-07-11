@@ -740,7 +740,9 @@ var Node = class {
     this.info = await this.rest.getInfo().catch(() => null);
     this.manager.emit("nodeConnect", this);
     this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
-    if (this.manager.options.autoResume) await this.manager.resumePlayers(this).catch(() => null);
+    if (this.manager.options.autoResume && !payload.resumed) {
+      await this.manager.resumePlayers(this).catch(() => null);
+    }
   }
   handleEvent(payload) {
     const player = this.manager.players.get(payload.guildId);
@@ -750,7 +752,7 @@ var Node = class {
         player.handleTrackStart(payload);
         break;
       case "TrackEndEvent" /* TrackEndEvent */:
-        player.handleTrackEnd(payload);
+        void player.handleTrackEnd(payload).catch((error) => this.manager.emit("nodeError", this, error));
         break;
       case "TrackStuckEvent" /* TrackStuckEvent */:
         player.handleTrackStuck(payload);
@@ -759,7 +761,7 @@ var Node = class {
         player.handleTrackException(payload);
         break;
       case "WebSocketClosedEvent" /* WebSocketClosedEvent */:
-        void player.handleSocketClosed(payload);
+        void player.handleSocketClosed(payload).catch((error) => this.manager.emit("nodeError", this, error));
         break;
       case "LyricsFoundEvent" /* LyricsFoundEvent */:
         this.manager.emit("lyricsFound", player, payload.lyrics, payload);
@@ -801,12 +803,13 @@ var Node = class {
       this.destroy();
       return;
     }
+    const delay = Math.min(this.options.retryDelay * (this.reconnectAttempts + 1), 6e4);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectAttempts++;
       this.manager.emit("nodeReconnect", this);
       this.manager.emit("debug", `[Node ${this.id}] Reconnecting (attempt ${this.reconnectAttempts}/${this.options.retryAmount}).`);
       this.connect();
-    }, this.options.retryDelay);
+    }, delay);
   }
 };
 
@@ -821,9 +824,11 @@ var RepeatMode = /* @__PURE__ */ ((RepeatMode2) => {
 // src/classes/Player.ts
 var Player = class _Player {
   constructor(manager, options, node) {
-    this.position = 0;
     this.ping = 0;
     this.timestamp = 0;
+    /** Last position reported by the node, and the wall-clock time we received it. */
+    this._position = 0;
+    this._positionUpdatedAt = 0;
     this.playing = false;
     this.paused = false;
     this.connected = false;
@@ -836,6 +841,13 @@ var Player = class _Player {
     this.voiceReconnectAttempts = 0;
     /** Guards against overlapping autoplay lookups when a queue drains rapidly. */
     this.autoplaying = false;
+    /**
+     * Why the current track is about to end, when we caused it. Lavalink reports
+     * both a manual `stop()` and a `skip()` as reason `"stopped"`, so we record the
+     * intent here to tell them apart: a stop ends playback cleanly (no repeat, no
+     * autoplay), a skip advances to the next track. Cleared as soon as it's read.
+     */
+    this.endIntent = null;
     this.manager = manager;
     this.node = node;
     this.guild = options.guild;
@@ -847,6 +859,22 @@ var Player = class _Player {
     this.data = options.data ?? {};
     this.queue = new (Structure.get("Queue"))();
     this.filters = new (Structure.get("Filters"))(this);
+  }
+  /**
+   * The current playback position in ms. Lavalink only pushes a fresh position
+   * every few seconds, so while a track is actively playing this interpolates
+   * from the last report using elapsed wall-clock time (clamped to the track
+   * duration) — giving an accurate value for progress bars between updates.
+   */
+  get position() {
+    if (!this.playing || this.paused || this._positionUpdatedAt === 0) return this._position;
+    const live = this._position + (Date.now() - this._positionUpdatedAt);
+    const duration = this.current?.duration ?? 0;
+    return duration > 0 ? Math.min(live, duration) : live;
+  }
+  set position(value) {
+    this._position = value;
+    this._positionUpdatedAt = Date.now();
   }
   /** The track currently playing, if any. */
   get current() {
@@ -954,6 +982,7 @@ var Player = class _Player {
   /** Stops the current track. Pass `false` to keep the queue intact. */
   async stop(clearQueue = true) {
     if (clearQueue) this.queue.clear();
+    this.endIntent = "stop";
     await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
     this.playing = false;
     this.queue.current = null;
@@ -962,6 +991,7 @@ var Player = class _Player {
   /** Skips `amount` tracks (default 1) by ending the current track early. */
   async skip(amount = 1) {
     if (amount > 1) this.queue.splice(0, amount - 1);
+    this.endIntent = "skip";
     await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
     return this;
   }
@@ -973,6 +1003,7 @@ var Player = class _Player {
     return this.play({ track: prev });
   }
   async pause(state = true) {
+    if (state) this.position = this.position;
     await this.node.rest.updatePlayer(this.guild, { paused: state });
     this.paused = state;
     this.playing = !state;
@@ -1093,6 +1124,7 @@ var Player = class _Player {
   handleTrackStart(payload) {
     this.playing = true;
     this.paused = false;
+    this.endIntent = null;
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackStart", this, track, payload);
   }
@@ -1100,26 +1132,39 @@ var Player = class _Player {
   async handleTrackEnd(payload) {
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackEnd", this, track, payload);
-    if (payload.reason === "replaced") return;
-    if (payload.reason === "loadFailed" || payload.reason === "cleanup") {
-      return void this.advance(track, payload);
+    const intent = this.endIntent;
+    this.endIntent = null;
+    if (payload.reason === "replaced" || payload.reason === "cleanup") return;
+    if (intent === "stop") {
+      this.recordPrevious(track);
+      this.playing = false;
+      this.queue.current = null;
+      await this.save();
+      if (this.queue.length === 0) this.manager.emit("queueEnd", this, track, payload);
+      return;
     }
-    if (this.repeatMode === 1 /* TRACK */ && track) {
-      return void this.play({ track });
+    const naturalEnd = payload.reason === "finished" && intent !== "skip";
+    if (naturalEnd && track) {
+      if (this.repeatMode === 1 /* TRACK */) {
+        return void this.play({ track }).catch((error) => this.manager.emit("nodeError", this.node, error));
+      }
+      if (this.repeatMode === 2 /* QUEUE */) this.queue.push(track);
     }
-    if (this.repeatMode === 2 /* QUEUE */ && track) {
-      this.queue.push(track);
-    }
-    await this.advance(track, payload);
+    await this.advance(track, payload, naturalEnd);
   }
-  async advance(previous, payload) {
-    if (previous) this.queue.previous.unshift(previous);
+  /** Pushes a just-finished track onto the front of the history, capped at 50. */
+  recordPrevious(track) {
+    if (!track) return;
+    this.queue.previous.unshift(track);
     if (this.queue.previous.length > 50) this.queue.previous.length = 50;
+  }
+  async advance(previous, payload, naturalEnd) {
+    this.recordPrevious(previous);
     if (this.queue.length > 0) {
       await this.play().catch((error) => this.manager.emit("nodeError", this.node, error));
       return;
     }
-    if ((this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
+    if (naturalEnd && (this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
       this.autoplaying = true;
       try {
         const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);

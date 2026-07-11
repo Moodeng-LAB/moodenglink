@@ -47,9 +47,32 @@ export class Player {
 	public readonly filters: Filters;
 
 	public volume: number;
-	public position = 0;
 	public ping = 0;
 	public timestamp = 0;
+
+	/** Last position reported by the node, and the wall-clock time we received it. */
+	private _position = 0;
+	private _positionUpdatedAt = 0;
+
+	/**
+	 * The current playback position in ms. Lavalink only pushes a fresh position
+	 * every few seconds, so while a track is actively playing this interpolates
+	 * from the last report using elapsed wall-clock time (clamped to the track
+	 * duration) — giving an accurate value for progress bars between updates.
+	 */
+	public get position(): number {
+		// Fall back to the raw value when paused, stopped, or before the first report
+		// (a stale `_positionUpdatedAt` of 0 would otherwise add the whole epoch).
+		if (!this.playing || this.paused || this._positionUpdatedAt === 0) return this._position;
+		const live = this._position + (Date.now() - this._positionUpdatedAt);
+		const duration = this.current?.duration ?? 0;
+		return duration > 0 ? Math.min(live, duration) : live;
+	}
+
+	public set position(value: number) {
+		this._position = value;
+		this._positionUpdatedAt = Date.now();
+	}
 
 	public playing = false;
 	public paused = false;
@@ -70,6 +93,14 @@ export class Player {
 
 	/** Guards against overlapping autoplay lookups when a queue drains rapidly. */
 	private autoplaying = false;
+
+	/**
+	 * Why the current track is about to end, when we caused it. Lavalink reports
+	 * both a manual `stop()` and a `skip()` as reason `"stopped"`, so we record the
+	 * intent here to tell them apart: a stop ends playback cleanly (no repeat, no
+	 * autoplay), a skip advances to the next track. Cleared as soon as it's read.
+	 */
+	private endIntent: "stop" | "skip" | null = null;
 
 	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
 		this.manager = manager;
@@ -216,6 +247,9 @@ export class Player {
 	/** Stops the current track. Pass `false` to keep the queue intact. */
 	public async stop(clearQueue = true): Promise<this> {
 		if (clearQueue) this.queue.clear();
+		// Signal intent before the null-track update so the resulting trackEnd
+		// ("stopped") ends playback cleanly instead of repeating/autoplaying.
+		this.endIntent = "stop";
 		await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
 		this.playing = false;
 		this.queue.current = null;
@@ -225,6 +259,8 @@ export class Player {
 	/** Skips `amount` tracks (default 1) by ending the current track early. */
 	public async skip(amount = 1): Promise<this> {
 		if (amount > 1) this.queue.splice(0, amount - 1);
+		// A skip advances to the next track but must not re-trigger repeat.
+		this.endIntent = "skip";
 		await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
 		return this;
 	}
@@ -238,6 +274,9 @@ export class Player {
 	}
 
 	public async pause(state = true): Promise<this> {
+		// Freeze the interpolated position at the instant of pausing, so it doesn't
+		// revert to the last (older) node report while paused.
+		if (state) this.position = this.position;
 		await this.node.rest.updatePlayer(this.guild, { paused: state });
 		this.paused = state;
 		this.playing = !state;
@@ -388,6 +427,10 @@ export class Player {
 	public handleTrackStart(payload: TrackStartEvent): void {
 		this.playing = true;
 		this.paused = false;
+		// A fresh track invalidates any pending stop/skip intent that never produced
+		// a trackEnd (e.g. stop() called while nothing was playing), so it can't
+		// bleed into this track's natural finish.
+		this.endIntent = null;
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackStart", this, track, payload);
 	}
@@ -397,35 +440,59 @@ export class Player {
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackEnd", this, track, payload);
 
-		// These reasons should never advance the queue.
-		if (payload.reason === "replaced") return;
-		if (payload.reason === "loadFailed" || payload.reason === "cleanup") {
-			return void this.advance(track, payload);
+		// Read & clear the intent that this end (if any) was our own doing.
+		const intent = this.endIntent;
+		this.endIntent = null;
+
+		// A track that was replaced by another, or cleaned up as the player is torn
+		// down, must never continue the queue.
+		if (payload.reason === "replaced" || payload.reason === "cleanup") return;
+
+		// An explicit stop() ends playback cleanly — no repeat, no advance, no
+		// autoplay — regardless of repeat mode. The stopped track still joins the
+		// history so `previous()` can reach it.
+		if (intent === "stop") {
+			this.recordPrevious(track);
+			this.playing = false;
+			this.queue.current = null;
+			await this.save();
+			// Only signal queueEnd when nothing is left to play (stop(false) may keep a queue).
+			if (this.queue.length === 0) this.manager.emit("queueEnd", this, track, payload);
+			return;
 		}
 
-		// Repeat handling.
-		if (this.repeatMode === RepeatMode.TRACK && track) {
-			return void this.play({ track });
-		}
-		if (this.repeatMode === RepeatMode.QUEUE && track) {
-			this.queue.push(track);
+		// Repeat applies only to a track that finished on its own — never to a
+		// manual skip or a load failure (which should move on to the next track).
+		const naturalEnd = payload.reason === "finished" && intent !== "skip";
+		if (naturalEnd && track) {
+			if (this.repeatMode === RepeatMode.TRACK) {
+				return void this.play({ track }).catch((error) => this.manager.emit("nodeError", this.node, error as Error));
+			}
+			if (this.repeatMode === RepeatMode.QUEUE) this.queue.push(track);
 		}
 
-		await this.advance(track, payload);
+		await this.advance(track, payload, naturalEnd);
 	}
 
-	private async advance(previous: Track | null, payload: TrackEndEvent): Promise<void> {
-		if (previous) this.queue.previous.unshift(previous);
+	/** Pushes a just-finished track onto the front of the history, capped at 50. */
+	private recordPrevious(track: Track | null): void {
+		if (!track) return;
+		this.queue.previous.unshift(track);
 		if (this.queue.previous.length > 50) this.queue.previous.length = 50;
+	}
+
+	private async advance(previous: Track | null, payload: TrackEndEvent, naturalEnd: boolean): Promise<void> {
+		this.recordPrevious(previous);
 
 		if (this.queue.length > 0) {
 			await this.play().catch((error) => this.manager.emit("nodeError", this.node, error as Error));
 			return;
 		}
 
-		// Autoplay a related track if enabled. The guard stops a burst of rapid
+		// Autoplay a related track only when the queue drained on a natural finish —
+		// never continue after a manual skip. The guard stops a burst of rapid
 		// track-end events from firing several overlapping lookups.
-		if ((this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
+		if (naturalEnd && (this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
 			this.autoplaying = true;
 			try {
 				const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);

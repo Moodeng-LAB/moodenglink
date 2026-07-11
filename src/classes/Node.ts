@@ -195,7 +195,12 @@ export class Node {
 		this.manager.emit("nodeConnect", this);
 		this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
 
-		if (this.manager.options.autoResume) await this.manager.resumePlayers(this).catch(() => null);
+		// Only restore from the store on a *cold* session. When `resumed` is true the
+		// node kept our previous session alive and is still playing, so replaying
+		// from the persisted position would restart/jump every live track.
+		if (this.manager.options.autoResume && !payload.resumed) {
+			await this.manager.resumePlayers(this).catch(() => null);
+		}
 	}
 
 	private handleEvent(payload: PlayerEvent): void {
@@ -207,7 +212,8 @@ export class Node {
 				player.handleTrackStart(payload);
 				break;
 			case EventTypes.TrackEndEvent:
-				player.handleTrackEnd(payload);
+				// Async: never let a rejected advance/repeat become an unhandled rejection.
+				void player.handleTrackEnd(payload).catch((error) => this.manager.emit("nodeError", this, error as Error));
 				break;
 			case EventTypes.TrackStuckEvent:
 				player.handleTrackStuck(payload);
@@ -216,7 +222,7 @@ export class Node {
 				player.handleTrackException(payload);
 				break;
 			case EventTypes.WebSocketClosedEvent:
-				void player.handleSocketClosed(payload);
+				void player.handleSocketClosed(payload).catch((error) => this.manager.emit("nodeError", this, error as Error));
 				break;
 			case EventTypes.LyricsFoundEvent:
 				this.manager.emit("lyricsFound", player, payload.lyrics, payload);
@@ -264,11 +270,14 @@ export class Node {
 			return;
 		}
 
+		// Incremental backoff (capped) so a node that stays down isn't hammered
+		// once per fixed interval — the delay grows with each failed attempt.
+		const delay = Math.min(this.options.retryDelay * (this.reconnectAttempts + 1), 60_000);
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectAttempts++;
 			this.manager.emit("nodeReconnect", this);
 			this.manager.emit("debug", `[Node ${this.id}] Reconnecting (attempt ${this.reconnectAttempts}/${this.options.retryAmount}).`);
 			this.connect();
-		}, this.options.retryDelay);
+		}, delay);
 	}
 }
