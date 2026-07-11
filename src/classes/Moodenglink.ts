@@ -104,19 +104,57 @@ export class Moodenglink extends EventEmitter {
 		return node;
 	}
 
+	/**
+	 * Picks the best connected node matching `usable` via the configured sorter.
+	 * Fast-paths the overwhelmingly common single-node deployment — no Collection
+	 * allocation and no sort — and only materialises a filtered Collection for the
+	 * sorter when there is an actual choice to make.
+	 */
+	private selectNode(usable: (node: Node) => boolean): Node | undefined {
+		let candidate: Node | undefined;
+		let count = 0;
+		for (const node of this.nodes.values()) {
+			if (node.connected && usable(node)) {
+				candidate = node;
+				if (++count > 1) break;
+			}
+		}
+		if (count <= 1) return candidate;
+
+		// A custom sorter is honoured verbatim; only then do we pay for the
+		// filtered Collection + sort it expects.
+		const sorter = this.options.sorter;
+		if (sorter) return sorter(this.nodes.filter((n) => n.connected && usable(n))).first();
+
+		// Default (leastUsedNode) selection inlined as an allocation-free O(n)
+		// min-scan: fewest playing players wins, ties broken by higher priority,
+		// then insertion order — identical to `filter().sort().first()`.
+		let best: Node | undefined;
+		let bestPlayers = Number.POSITIVE_INFINITY;
+		let bestPriority = Number.NEGATIVE_INFINITY;
+		for (const node of this.nodes.values()) {
+			if (!node.connected || !usable(node)) continue;
+			const players = node.stats?.playingPlayers ?? 0;
+			if (players < bestPlayers || (players === bestPlayers && node.options.priority > bestPriority)) {
+				best = node;
+				bestPlayers = players;
+				bestPriority = node.options.priority;
+			}
+		}
+		return best;
+	}
+
 	/** The best available node according to the configured sorter. */
 	public get idealNode(): Node {
-		const sorter = this.options.sorter ?? leastUsedNode;
-		const sorted = sorter(this.nodes.filter((n) => n.connected && n.options.playback));
-		const node = sorted.first();
+		const node = this.selectNode((n) => n.options.playback);
 		if (!node) throw new Error("No connected nodes are available.");
 		return node;
 	}
 
 	private searchNode(): Node {
-		const sorter = this.options.sorter ?? leastUsedNode;
-		const candidates = this.nodes.filter((n) => n.connected && n.options.search);
-		const node = sorter(candidates).first() ?? this.nodes.filter((n) => n.connected).first();
+		// Fall back to any connected node (first, in insertion order) when none is
+		// explicitly search-capable — matching the previous behaviour.
+		const node = this.selectNode((n) => n.options.search) ?? this.nodes.find((n) => n.connected);
 		if (!node) throw new Error("No connected nodes are available for searching.");
 		return node;
 	}

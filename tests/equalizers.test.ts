@@ -3,9 +3,7 @@ import { Equalizers } from "../src/utils/equalizers";
 
 describe("Equalizers", () => {
 	it("exposes named presets", () => {
-		expect(Object.keys(Equalizers)).toEqual(
-			expect.arrayContaining(["flat", "bass", "soft", "treble", "pop", "party", "rock", "electronic", "radio"]),
-		);
+		expect(Object.keys(Equalizers)).toEqual(expect.arrayContaining(["flat", "bass", "soft", "treble", "pop", "party", "rock", "electronic", "radio"]));
 	});
 
 	it("each preset has 15 sequential bands with in-range gains", () => {

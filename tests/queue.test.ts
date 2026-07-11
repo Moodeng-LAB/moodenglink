@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Queue } from "../src/classes/Queue";
 import type { Track } from "../src/types/Player";
 
-const track = (id: string, duration = 1000): Track =>
-	({ encoded: id, identifier: id, duration, title: id }) as unknown as Track;
+const track = (id: string, duration = 1000): Track => ({ encoded: id, identifier: id, duration, title: id }) as unknown as Track;
 
 describe("Queue", () => {
 	it("adds single tracks and arrays, reports size and duration", () => {

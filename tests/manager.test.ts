@@ -3,6 +3,7 @@ import { Moodenglink } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
 import { Player } from "../src/classes/Player";
 import { MemoryStore } from "../src/classes/stores";
+import leastUsedNode from "../src/sorter/leastUsedNode";
 import { makeStats, makeTrackData } from "./helpers";
 
 function buildManager(extra: Record<string, unknown> = {}) {
@@ -44,6 +45,43 @@ describe("Moodenglink.idealNode", () => {
 		expect(manager.idealNode).toBe(node);
 		node.connected = false;
 		expect(() => manager.idealNode).toThrow(/No connected nodes/);
+	});
+
+	it("skips nodes without the playback capability", () => {
+		const manager = new Moodenglink({
+			nodes: [
+				{ host: "a", identifier: "search-only", playback: false },
+				{ host: "b", identifier: "playable" },
+			],
+			clientId: "bot",
+			send: () => {},
+		});
+		for (const n of manager.nodes.values()) {
+			n.connected = true;
+			n.stats = makeStats() as never;
+		}
+		expect(manager.idealNode.id).toBe("playable");
+	});
+
+	it("inline default selection matches leastUsedNode().first() across random stats/priorities", () => {
+		const nodes = Array.from({ length: 8 }, (_, i) => ({ host: `h${i}`, identifier: `n${i}`, priority: i % 3 }));
+		const manager = new Moodenglink({ nodes, clientId: "bot", send: () => {} });
+
+		for (let round = 0; round < 200; round++) {
+			for (const n of manager.nodes.values()) {
+				// Randomly vary connectivity, load and priority each round.
+				n.connected = Math.random() > 0.2;
+				(n.options as { priority: number }).priority = Math.floor(Math.random() * 4);
+				n.stats = makeStats({ playingPlayers: Math.floor(Math.random() * 5) }) as never;
+			}
+			const connected = manager.nodes.filter((n) => n.connected && n.options.playback);
+			if (!connected.size) {
+				expect(() => manager.idealNode).toThrow();
+				continue;
+			}
+			const expected = leastUsedNode(connected).first();
+			expect(manager.idealNode).toBe(expected);
+		}
 	});
 });
 

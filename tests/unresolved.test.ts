@@ -89,11 +89,7 @@ describe("Player.play resolves unresolved queue items", () => {
 		await player.play();
 
 		expect(player.current?.encoded).toBe("PLAYABLE");
-		expect(update).toHaveBeenCalledWith(
-			"g1",
-			expect.objectContaining({ track: expect.objectContaining({ encoded: "PLAYABLE" }) }),
-			false,
-		);
+		expect(update).toHaveBeenCalledWith("g1", expect.objectContaining({ track: expect.objectContaining({ encoded: "PLAYABLE" }) }), false);
 	});
 
 	it("skips items that fail to resolve and plays the next", async () => {

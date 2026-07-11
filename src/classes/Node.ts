@@ -6,7 +6,7 @@
 import WebSocket from "ws";
 import type { NodeInfo, NodeOptions, NodeStats } from "../types/Node";
 import { EventTypes, OpCodes } from "../types/Op";
-import type { IncomingPayload, PlayerEvent } from "../types/Op";
+import type { IncomingPayload, PlayerEvent, ReadyPayload } from "../types/Op";
 import type { Moodenglink } from "./Moodenglink";
 import { Rest } from "./Rest";
 
@@ -64,7 +64,11 @@ export class Node {
 
 	/** Total number of players currently bound to this node. */
 	public get playerCount(): number {
-		return this.manager.players.filter((p) => p.node === this).size;
+		// Single pass, no intermediate Collection — this getter is read by the
+		// load-balancing sorters on every play/search.
+		let count = 0;
+		for (const player of this.manager.players.values()) if (player.node === this) count++;
+		return count;
 	}
 
 	/**
@@ -135,10 +139,10 @@ export class Node {
 		this.manager.emit("debug", `[Node ${this.id}] WebSocket opened.`);
 	}
 
-	private async onMessage(raw: WebSocket.RawData): Promise<void> {
+	private onMessage(raw: WebSocket.RawData): void {
 		let payload: IncomingPayload;
 		try {
-			payload = JSON.parse(raw.toString());
+			payload = JSON.parse(typeof raw === "string" ? raw : raw.toString());
 		} catch {
 			this.manager.emit("debug", `[Node ${this.id}] Failed to parse frame.`);
 			return;
@@ -146,45 +150,52 @@ export class Node {
 
 		this.manager.emit("nodeRaw", payload);
 
+		// playerUpdate is by far the most frequent frame (one per active player
+		// every few seconds), so keep this dispatch synchronous — only READY does
+		// async I/O, and it's fire-and-forget below.
 		switch (payload.op) {
-			case OpCodes.READY: {
-				this.connected = true;
-				this.rest.sessionId = payload.sessionId;
-				this.reconnectAttempts = 0;
-
-				// Enable session resuming on the node side.
-				await this.rest.updateSession(true, this.options.resumeTimeout).catch(() => null);
-				this.info = await this.rest.getInfo().catch(() => null);
-
-				this.manager.emit("nodeConnect", this);
-				this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
-
-				if (this.manager.options.autoResume) await this.manager.resumePlayers(this).catch(() => null);
-				break;
-			}
-
-			case OpCodes.STATS: {
-				const { op, ...stats } = payload;
-				this.stats = stats as NodeStats;
-				this.manager.emit("nodeStats", this, this.stats);
-				break;
-			}
-
 			case OpCodes.PLAYER_UPDATE: {
 				const player = this.manager.players.get(payload.guildId);
 				if (player) {
 					this.lastPing = payload.state.ping;
 					player.updateState(payload.state);
 				}
-				break;
+				return;
 			}
 
 			case OpCodes.EVENT: {
 				this.manager.emit("raw", payload as PlayerEvent);
 				this.handleEvent(payload as PlayerEvent);
-				break;
+				return;
 			}
+
+			case OpCodes.STATS: {
+				const { op, ...stats } = payload;
+				this.stats = stats as NodeStats;
+				this.manager.emit("nodeStats", this, this.stats);
+				return;
+			}
+
+			case OpCodes.READY:
+				void this.handleReady(payload);
+				return;
 		}
+	}
+
+	/** Handles the one-off READY frame's async setup (session resume, info fetch). */
+	private async handleReady(payload: ReadyPayload): Promise<void> {
+		this.connected = true;
+		this.rest.sessionId = payload.sessionId;
+		this.reconnectAttempts = 0;
+
+		// Enable session resuming on the node side.
+		await this.rest.updateSession(true, this.options.resumeTimeout).catch(() => null);
+		this.info = await this.rest.getInfo().catch(() => null);
+
+		this.manager.emit("nodeConnect", this);
+		this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
+
+		if (this.manager.options.autoResume) await this.manager.resumePlayers(this).catch(() => null);
 	}
 
 	private handleEvent(payload: PlayerEvent): void {

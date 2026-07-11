@@ -616,6 +616,8 @@ declare class Node {
     destroy(): void;
     private onOpen;
     private onMessage;
+    /** Handles the one-off READY frame's async setup (session resume, info fetch). */
+    private handleReady;
     private handleEvent;
     private onClose;
     private onError;
@@ -999,6 +1001,13 @@ declare class Moodenglink extends EventEmitter {
     init(clientId?: string): this;
     /** Adds and connects a node at runtime. */
     addNode(options: ManagerOptions["nodes"][number]): Node;
+    /**
+     * Picks the best connected node matching `usable` via the configured sorter.
+     * Fast-paths the overwhelmingly common single-node deployment — no Collection
+     * allocation and no sort — and only materialises a filtered Collection for the
+     * sorter when there is an actual choice to make.
+     */
+    private selectNode;
     /** The best available node according to the configured sorter. */
     get idealNode(): Node;
     private searchNode;

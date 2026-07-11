@@ -70,16 +70,6 @@ module.exports = __toCommonJS(index_exports);
 var import_collection = require("@discordjs/collection");
 var import_node_events = require("events");
 
-// src/sorter/leastUsedNode.ts
-function leastUsedNode(nodes) {
-  return nodes.filter((node) => node.connected).sort((a, b) => {
-    const aPlayers = a.stats?.playingPlayers ?? 0;
-    const bPlayers = b.stats?.playingPlayers ?? 0;
-    if (aPlayers === bPlayers) return b.options.priority - a.options.priority;
-    return aPlayers - bPlayers;
-  });
-}
-
 // src/utils/sources.ts
 var SearchPrefixes = {
   youtube: "ytsearch",
@@ -651,7 +641,9 @@ var Node = class {
   }
   /** Total number of players currently bound to this node. */
   get playerCount() {
-    return this.manager.players.filter((p) => p.node === this).size;
+    let count = 0;
+    for (const player of this.manager.players.values()) if (player.node === this) count++;
+    return count;
   }
   /**
    * A composite load score (lower is better) used by the load-balancing
@@ -705,47 +697,50 @@ var Node = class {
     this.reconnectAttempts = 0;
     this.manager.emit("debug", `[Node ${this.id}] WebSocket opened.`);
   }
-  async onMessage(raw) {
+  onMessage(raw) {
     let payload;
     try {
-      payload = JSON.parse(raw.toString());
+      payload = JSON.parse(typeof raw === "string" ? raw : raw.toString());
     } catch {
       this.manager.emit("debug", `[Node ${this.id}] Failed to parse frame.`);
       return;
     }
     this.manager.emit("nodeRaw", payload);
     switch (payload.op) {
-      case "ready" /* READY */: {
-        this.connected = true;
-        this.rest.sessionId = payload.sessionId;
-        this.reconnectAttempts = 0;
-        await this.rest.updateSession(true, this.options.resumeTimeout).catch(() => null);
-        this.info = await this.rest.getInfo().catch(() => null);
-        this.manager.emit("nodeConnect", this);
-        this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
-        if (this.manager.options.autoResume) await this.manager.resumePlayers(this).catch(() => null);
-        break;
-      }
-      case "stats" /* STATS */: {
-        const { op, ...stats } = payload;
-        this.stats = stats;
-        this.manager.emit("nodeStats", this, this.stats);
-        break;
-      }
       case "playerUpdate" /* PLAYER_UPDATE */: {
         const player = this.manager.players.get(payload.guildId);
         if (player) {
           this.lastPing = payload.state.ping;
           player.updateState(payload.state);
         }
-        break;
+        return;
       }
       case "event" /* EVENT */: {
         this.manager.emit("raw", payload);
         this.handleEvent(payload);
-        break;
+        return;
       }
+      case "stats" /* STATS */: {
+        const { op, ...stats } = payload;
+        this.stats = stats;
+        this.manager.emit("nodeStats", this, this.stats);
+        return;
+      }
+      case "ready" /* READY */:
+        void this.handleReady(payload);
+        return;
     }
+  }
+  /** Handles the one-off READY frame's async setup (session resume, info fetch). */
+  async handleReady(payload) {
+    this.connected = true;
+    this.rest.sessionId = payload.sessionId;
+    this.reconnectAttempts = 0;
+    await this.rest.updateSession(true, this.options.resumeTimeout).catch(() => null);
+    this.info = await this.rest.getInfo().catch(() => null);
+    this.manager.emit("nodeConnect", this);
+    this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
+    if (this.manager.options.autoResume) await this.manager.resumePlayers(this).catch(() => null);
   }
   handleEvent(payload) {
     const player = this.manager.players.get(payload.guildId);
@@ -1355,18 +1350,46 @@ var Moodenglink = class extends import_node_events.EventEmitter {
     if (this.initialized) node.connect();
     return node;
   }
+  /**
+   * Picks the best connected node matching `usable` via the configured sorter.
+   * Fast-paths the overwhelmingly common single-node deployment — no Collection
+   * allocation and no sort — and only materialises a filtered Collection for the
+   * sorter when there is an actual choice to make.
+   */
+  selectNode(usable) {
+    let candidate;
+    let count = 0;
+    for (const node of this.nodes.values()) {
+      if (node.connected && usable(node)) {
+        candidate = node;
+        if (++count > 1) break;
+      }
+    }
+    if (count <= 1) return candidate;
+    const sorter = this.options.sorter;
+    if (sorter) return sorter(this.nodes.filter((n) => n.connected && usable(n))).first();
+    let best;
+    let bestPlayers = Number.POSITIVE_INFINITY;
+    let bestPriority = Number.NEGATIVE_INFINITY;
+    for (const node of this.nodes.values()) {
+      if (!node.connected || !usable(node)) continue;
+      const players = node.stats?.playingPlayers ?? 0;
+      if (players < bestPlayers || players === bestPlayers && node.options.priority > bestPriority) {
+        best = node;
+        bestPlayers = players;
+        bestPriority = node.options.priority;
+      }
+    }
+    return best;
+  }
   /** The best available node according to the configured sorter. */
   get idealNode() {
-    const sorter = this.options.sorter ?? leastUsedNode;
-    const sorted = sorter(this.nodes.filter((n) => n.connected && n.options.playback));
-    const node = sorted.first();
+    const node = this.selectNode((n) => n.options.playback);
     if (!node) throw new Error("No connected nodes are available.");
     return node;
   }
   searchNode() {
-    const sorter = this.options.sorter ?? leastUsedNode;
-    const candidates = this.nodes.filter((n) => n.connected && n.options.search);
-    const node = sorter(candidates).first() ?? this.nodes.filter((n) => n.connected).first();
+    const node = this.selectNode((n) => n.options.search) ?? this.nodes.find((n) => n.connected);
     if (!node) throw new Error("No connected nodes are available for searching.");
     return node;
   }
@@ -1662,6 +1685,16 @@ var RedisStore = class {
 // src/sorter/leastLoadNode.ts
 function leastLoadNode(nodes) {
   return nodes.filter((node) => node.connected).sort((a, b) => a.penalties - b.penalties);
+}
+
+// src/sorter/leastUsedNode.ts
+function leastUsedNode(nodes) {
+  return nodes.filter((node) => node.connected).sort((a, b) => {
+    const aPlayers = a.stats?.playingPlayers ?? 0;
+    const bPlayers = b.stats?.playingPlayers ?? 0;
+    if (aPlayers === bPlayers) return b.options.priority - a.options.priority;
+    return aPlayers - bPlayers;
+  });
 }
 
 // src/index.ts

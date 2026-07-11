@@ -15,9 +15,13 @@ describe("Structure", () => {
 	});
 
 	it("extends a structure and exposes the subclass", () => {
-		const Extended = Structure.extend("Queue", (Base) => class MyQueue extends Base {
-			public tag = "custom";
-		});
+		const Extended = Structure.extend(
+			"Queue",
+			(Base) =>
+				class MyQueue extends Base {
+					public tag = "custom";
+				},
+		);
 		expect(Structure.get("Queue")).toBe(Extended);
 		const q = new (Structure.get("Queue"))();
 		expect((q as InstanceType<typeof Extended>).tag).toBe("custom");
@@ -25,11 +29,15 @@ describe("Structure", () => {
 	});
 
 	it("makes the manager instantiate the extended Player and Queue", () => {
-		Structure.extend("Player", (Base) => class MyPlayer extends Base {
-			public greet() {
-				return "hi from " + this.guild;
-			}
-		});
+		Structure.extend(
+			"Player",
+			(Base) =>
+				class MyPlayer extends Base {
+					public greet() {
+						return "hi from " + this.guild;
+					}
+				},
+		);
 
 		const manager = new Moodenglink({
 			nodes: [{ host: "h", port: 1, password: "p", identifier: "n1" }],
