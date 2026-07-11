@@ -55,7 +55,7 @@ export class Moodenglink extends EventEmitter {
 
 		this.options = {
 			shards: 1,
-			clientName: "Moodenglink/1.0.0",
+			clientName: "Moodenglink",
 			autoPlay: false,
 			autoMove: true,
 			autoResume: false,
@@ -411,6 +411,17 @@ export class Moodenglink extends EventEmitter {
 		return this;
 	}
 
+	/** Unregisters a plugin (by instance or name) and runs its `unload` hook. */
+	public removePlugin(plugin: Plugin | string): this {
+		const name = typeof plugin === "string" ? plugin : plugin.name;
+		const registered = this.plugins.get(name);
+		if (!registered) return this;
+		this.plugins.delete(name);
+		registered.unload(this);
+		this.emit("debug", `[Moodenglink] Unloaded plugin "${name}".`);
+		return this;
+	}
+
 	/* -------------------------- unresolved tracks -------------------------- */
 
 	/** Resolves an {@link UnresolvedQuery} into a playable {@link Track}. */
@@ -450,9 +461,11 @@ export class Moodenglink extends EventEmitter {
 		return unresolved;
 	}
 
-	/** Cleanly disconnects every node and destroys every player. */
+	/** Cleanly tears everything down: destroys every player, node and plugin. */
 	public async destroyAll(): Promise<void> {
 		for (const player of this.players.values()) await player.destroy().catch(() => null);
 		for (const node of this.nodes.values()) node.destroy();
+		for (const plugin of this.plugins.values()) plugin.unload(this);
+		this.plugins.clear();
 	}
 }

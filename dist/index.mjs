@@ -1285,7 +1285,7 @@ var Moodenglink = class extends EventEmitter {
     if (typeof options.send !== "function") throw new Error("Moodenglink requires a `send` function.");
     this.options = {
       shards: 1,
-      clientName: "Moodenglink/1.0.0",
+      clientName: "Moodenglink",
       autoPlay: false,
       autoMove: true,
       autoResume: false,
@@ -1568,6 +1568,16 @@ var Moodenglink = class extends EventEmitter {
     this.emit("debug", `[Moodenglink] Loaded plugin "${plugin.name}".`);
     return this;
   }
+  /** Unregisters a plugin (by instance or name) and runs its `unload` hook. */
+  removePlugin(plugin) {
+    const name = typeof plugin === "string" ? plugin : plugin.name;
+    const registered = this.plugins.get(name);
+    if (!registered) return this;
+    this.plugins.delete(name);
+    registered.unload(this);
+    this.emit("debug", `[Moodenglink] Unloaded plugin "${name}".`);
+    return this;
+  }
   /* -------------------------- unresolved tracks -------------------------- */
   /** Resolves an {@link UnresolvedQuery} into a playable {@link Track}. */
   async resolve(query) {
@@ -1604,10 +1614,12 @@ var Moodenglink = class extends EventEmitter {
     };
     return unresolved;
   }
-  /** Cleanly disconnects every node and destroys every player. */
+  /** Cleanly tears everything down: destroys every player, node and plugin. */
   async destroyAll() {
     for (const player of this.players.values()) await player.destroy().catch(() => null);
     for (const node of this.nodes.values()) node.destroy();
+    for (const plugin of this.plugins.values()) plugin.unload(this);
+    this.plugins.clear();
   }
 };
 

@@ -1064,6 +1064,8 @@ declare class Moodenglink extends EventEmitter {
     resumePlayers(node: Node): Promise<void>;
     /** Registers a plugin instance. */
     use(plugin: Plugin): this;
+    /** Unregisters a plugin (by instance or name) and runs its `unload` hook. */
+    removePlugin(plugin: Plugin | string): this;
     /** Resolves an {@link UnresolvedQuery} into a playable {@link Track}. */
     resolve(query: UnresolvedQuery): Promise<Track | null>;
     /**
@@ -1072,7 +1074,7 @@ declare class Moodenglink extends EventEmitter {
      * ideal for Spotify/Apple metadata that only YouTube/SoundCloud can stream.
      */
     buildUnresolved(query: UnresolvedQuery): UnresolvedTrack;
-    /** Cleanly disconnects every node and destroys every player. */
+    /** Cleanly tears everything down: destroys every player, node and plugin. */
     destroyAll(): Promise<void>;
 }
 
