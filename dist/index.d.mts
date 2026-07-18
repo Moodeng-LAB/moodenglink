@@ -28,6 +28,15 @@ interface PlayerDestroyContext {
     reason: PlayerDestroyReason;
     disconnected: boolean;
 }
+/**
+ * Why Moodenglink ended the current track, when we caused it.
+ * Lavalink reports both `stop()` and `skip()` as TrackEnd reason `"stopped"`.
+ */
+type TrackEndIntent = "stop" | "skip" | null;
+/** Extra context on `trackEnd` so bots can log skip vs stop correctly. */
+interface TrackEndContext {
+    intent: TrackEndIntent;
+}
 interface PlayerOptions {
     /** The guild the player belongs to. */
     guild: string;
@@ -909,7 +918,7 @@ declare class Player {
     private resolveUnresolved;
     /** Stops the current track. Pass `false` to keep the queue intact. */
     stop(clearQueue?: boolean): Promise<this>;
-    /** Skips `amount` tracks (default 1) by ending the current track early. */
+    /** Skips `amount` tracks (default 1). */
     skip(amount?: number): Promise<this>;
     /** Skips backwards to the previously played track. */
     previous(): Promise<this>;
@@ -1066,7 +1075,11 @@ interface ManagerOptions {
     autoResume?: boolean;
     /** How many times to try re-establishing a dropped voice connection. Defaults to `3`. */
     voiceReconnectTries?: number;
-    /** Base delay (ms) between voice reconnect attempts; scales per attempt. Defaults to `1000`. */
+    /**
+     * Base delay (ms) between voice reconnect attempts; scales per attempt. Defaults to `1000`.
+     * Codes `4006`/`4009` (common after process restart) reconnect immediately.
+     * Set to `0` for immediate reconnect on every recoverable close. Never leave→joins.
+     */
     voiceReconnectDelay?: number;
     /** The default platform used when a search query has no source prefix. */
     defaultSearchPlatform?: SearchPlatform;
@@ -1122,10 +1135,12 @@ interface ManagerEvents {
     playerStateUpdate: [player: Player];
     queueEnd: [player: Player, track: Track | null, payload: TrackEndEvent];
     trackStart: [player: Player, track: Track, payload: TrackStartEvent];
-    trackEnd: [player: Player, track: Track, payload: TrackEndEvent];
+    trackEnd: [player: Player, track: Track, payload: TrackEndEvent, context: TrackEndContext];
     trackStuck: [player: Player, track: Track, payload: TrackStuckEvent];
     trackError: [player: Player, track: Track, payload: TrackExceptionEvent];
     socketClosed: [player: Player, payload: WebSocketClosedEvent];
+    /** Emitted after {@link Moodenglink.syncResumedPlayers} reattaches local players. */
+    nodeResume: [node: Node, count: number];
     lyricsFound: [player: Player, lyrics: LyricsResult, payload: LyricsFoundEvent];
     lyricsNotFound: [player: Player, payload: LyricsNotFoundEvent];
     lyricsLine: [player: Player, line: LyricsLine, payload: LyricsLineEvent];
@@ -1235,6 +1250,19 @@ declare class Moodenglink extends EventEmitter {
     handleNodeFailover(deadNode: Node): Promise<void>;
     /** @internal Restores persisted players onto a freshly-connected node. */
     resumePlayers(node: Node, replay?: boolean): Promise<void>;
+    /**
+     * Reattach local players after a *resumed* Lavalink session (e.g. full process
+     * restart while the node kept the session alive).
+     *
+     * Fetches live players from the node, recreates missing local Players from the
+     * store + live state, calls `connect()` only (no `play()` / seek), and never
+     * restores stale Discord voice credentials from the store.
+     *
+     * Seamless here means no Lavalink play/seek restart — Discord voice still needs
+     * a fresh OP4 rebind after a process kill (audio gap is possible).
+     */
+    syncResumedPlayers(node: Node): Promise<number>;
+    private hydratePlayerFromStore;
     private restoreQueueItem;
     /** Registers a plugin instance. */
     use(plugin: Plugin): this;
@@ -1407,4 +1435,4 @@ declare class TTLCache<K, V> {
 
 var version = "1.7.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndContext, type TrackEndEvent, type TrackEndIntent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };

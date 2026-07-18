@@ -22,6 +22,7 @@ import type {
 	QueueItem,
 } from "../types/Player";
 import type { FilterPayload } from "../types/Filters";
+import type { LavalinkPlayer } from "../types/Rest";
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
 import { TTLCache } from "../utils/cache";
@@ -530,29 +531,8 @@ export class Moodenglink extends EventEmitter {
 					continue;
 				}
 
-				const player = this.create({
-					guild: data.guild as string,
-					voiceChannel: typeof data.voiceChannel === "string" ? data.voiceChannel : undefined,
-					textChannel: typeof data.textChannel === "string" ? data.textChannel : undefined,
-					node: node.id,
-					volume: typeof data.volume === "number" && Number.isFinite(data.volume) ? data.volume : undefined,
-					data: typeof data.data === "object" && data.data !== null ? (data.data as Record<string, unknown>) : undefined,
-				});
-
-				if (data.repeatMode === 0 || data.repeatMode === 1 || data.repeatMode === 2) {
-					player.repeatMode = data.repeatMode;
-				}
-				player.autoplay = data.autoplay === true;
-				if (data.filters && typeof data.filters === "object") player.filters.load(data.filters as FilterPayload);
-				if (Array.isArray(data.queue)) {
-					const restored = data.queue.map((item) => this.restoreQueueItem(item)).filter((item): item is QueueItem => item !== null);
-					player.queue.add(restored);
-				}
-				const current = this.restoreQueueItem(data.current);
-				if (current && "encoded" in current) player.queue.current = current;
-				if (Array.isArray(data.previous)) {
-					player.queue.previous = data.previous.map((item) => this.restoreQueueItem(item)).filter((item): item is Track => item !== null && "encoded" in item);
-				}
+				const player = this.hydratePlayerFromStore(node, data);
+				if (!player) continue;
 
 				if (!replay) {
 					player.paused = data.paused === true;
@@ -572,6 +552,114 @@ export class Moodenglink extends EventEmitter {
 				this.emit("debug", `[Moodenglink] Ignored malformed persisted player "${key}": ${(error as Error).message}`);
 			}
 		}
+	}
+
+	/**
+	 * Reattach local players after a *resumed* Lavalink session (e.g. full process
+	 * restart while the node kept the session alive).
+	 *
+	 * Fetches live players from the node, recreates missing local Players from the
+	 * store + live state, calls `connect()` only (no `play()` / seek), and never
+	 * restores stale Discord voice credentials from the store.
+	 *
+	 * Seamless here means no Lavalink play/seek restart — Discord voice still needs
+	 * a fresh OP4 rebind after a process kill (audio gap is possible).
+	 */
+	public async syncResumedPlayers(node: Node): Promise<number> {
+		const store = this.options.store;
+		if (!store) {
+			this.emit("nodeResume", node, 0);
+			return 0;
+		}
+
+		let live: LavalinkPlayer[];
+		try {
+			live = await node.rest.getPlayers();
+		} catch (error) {
+			this.emit("nodeError", node, error as Error);
+			this.emit("nodeResume", node, 0);
+			return 0;
+		}
+
+		let count = 0;
+		for (const livePlayer of live) {
+			if (this.players.has(livePlayer.guildId)) continue;
+
+			const key = `moodenglink:player:${livePlayer.guildId}`;
+			let raw: string | null;
+			try {
+				raw = await Promise.resolve(store.get(key));
+			} catch (error) {
+				this.emit("storeError", error as Error, "get", key);
+				continue;
+			}
+			if (!raw) continue;
+
+			try {
+				const data = JSON.parse(raw) as ReturnType<Player["toJSON"]>;
+				if (typeof data.guild !== "string" || typeof data.voiceChannel !== "string") continue;
+
+				const player = this.hydratePlayerFromStore(node, data);
+				if (!player) continue;
+
+				// Prefer live Lavalink state over the (possibly stale) store snapshot.
+				if (livePlayer.filters) player.filters.load(livePlayer.filters);
+				if (typeof livePlayer.volume === "number") {
+					player.volume = livePlayer.volume;
+					player.filters.volume = livePlayer.volume / 100;
+				}
+				player.paused = livePlayer.paused === true;
+				player.position = livePlayer.state?.position ?? 0;
+				if (livePlayer.track) {
+					player.queue.current = buildTrack(livePlayer.track);
+				}
+				player.playing = player.queue.current !== null && !player.paused;
+				player.state = "RESUMING";
+
+				// Discord voice credentials from the store are stale after a process
+				// restart — connect() sends a fresh OP4; gateway packets refill voiceState.
+				player.connect();
+				count++;
+				this.emit("debug", `[Moodenglink] Synced resumed player for guild ${livePlayer.guildId}.`);
+			} catch (error) {
+				this.emit("debug", `[Moodenglink] Ignored resumed player "${livePlayer.guildId}": ${(error as Error).message}`);
+			}
+		}
+
+		this.emit("nodeResume", node, count);
+		return count;
+	}
+
+	private hydratePlayerFromStore(node: Node, data: ReturnType<Player["toJSON"]>): Player | null {
+		if (typeof data.guild !== "string" || !data.guild) return null;
+
+		const player = this.create({
+			guild: data.guild,
+			voiceChannel: typeof data.voiceChannel === "string" ? data.voiceChannel : undefined,
+			textChannel: typeof data.textChannel === "string" ? data.textChannel : undefined,
+			node: node.id,
+			volume: typeof data.volume === "number" && Number.isFinite(data.volume) ? data.volume : undefined,
+			data: typeof data.data === "object" && data.data !== null ? (data.data as Record<string, unknown>) : undefined,
+		});
+
+		if (data.repeatMode === 0 || data.repeatMode === 1 || data.repeatMode === 2) {
+			player.repeatMode = data.repeatMode;
+		}
+		player.autoplay = data.autoplay === true;
+		if (data.filters && typeof data.filters === "object") player.filters.load(data.filters as FilterPayload);
+		if (Array.isArray(data.queue)) {
+			const restored = data.queue.map((item) => this.restoreQueueItem(item)).filter((item): item is QueueItem => item !== null);
+			player.queue.add(restored);
+		}
+		const current = this.restoreQueueItem(data.current);
+		if (current && "encoded" in current) player.queue.current = current;
+		if (Array.isArray(data.previous)) {
+			player.queue.previous = data.previous
+				.map((item) => this.restoreQueueItem(item))
+				.filter((item): item is Track => item !== null && "encoded" in item);
+		}
+		// Never restore voiceState from the store — Discord tokens/endpoints expire.
+		return player;
 	}
 
 	private restoreQueueItem(value: unknown): QueueItem | null {

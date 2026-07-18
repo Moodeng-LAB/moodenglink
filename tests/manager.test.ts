@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Moodenglink, SearchPolicyError } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
 import { Player } from "../src/classes/Player";
@@ -394,6 +394,8 @@ describe("Moodenglink.handleAutoplay", () => {
 });
 
 describe("Moodenglink.resumePlayers", () => {
+	afterEach(() => vi.restoreAllMocks());
+
 	function seedTrack(overrides: Record<string, unknown> = {}) {
 		return { encoded: "ENC", identifier: "id-1", uri: "u", duration: 213000, isStream: false, position: 0, pluginInfo: {}, userData: {}, ...overrides };
 	}
@@ -501,6 +503,91 @@ describe("Moodenglink.resumePlayers", () => {
 		await manager.resumePlayers(node);
 
 		expect(storeError).toHaveBeenCalledWith(expect.objectContaining({ message: "redis offline" }), "keys");
+	});
+});
+
+describe("Moodenglink.syncResumedPlayers", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	function seedTrack(overrides: Record<string, unknown> = {}) {
+		return { encoded: "ENC", title: "Song", author: "A", duration: 213_000, identifier: "u", isStream: false, ...overrides };
+	}
+
+	async function seedStore(store: MemoryStore, node: Node, data: Record<string, unknown>) {
+		await store.set(
+			"moodenglink:player:g1",
+			JSON.stringify({
+				guild: "g1",
+				voiceChannel: "vc1",
+				textChannel: "tx1",
+				node: node.id,
+				volume: 100,
+				position: 12_000,
+				paused: false,
+				repeatMode: 0,
+				autoplay: false,
+				current: seedTrack(),
+				queue: [],
+				previous: [],
+				filters: {},
+				data: {},
+				...data,
+			}),
+		);
+	}
+
+	it("reattaches local players from live Lavalink state without play/seek", async () => {
+		const store = new MemoryStore();
+		const { manager, node, send } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, {
+			position: 12_000,
+			current: seedTrack({ encoded: "STORE_ENC" }),
+			queue: [seedTrack({ encoded: "QUEUED" })],
+		});
+		vi.spyOn(node.rest, "getPlayers").mockResolvedValue([
+			{
+				guildId: "g1",
+				track: makeTrackData({ title: "Live Song" }, "LIVE_ENC"),
+				volume: 80,
+				paused: true,
+				state: { time: 1, position: 45_000, connected: true, ping: 5 },
+				voice: { token: "stale", endpoint: "stale", sessionId: "stale" },
+				filters: { volume: 0.8, timescale: { speed: 1.2, pitch: 1, rate: 1 } },
+			},
+		] as never);
+		const playSpy = vi.spyOn(Player.prototype, "play");
+		const nodeResume = vi.fn();
+		manager.on("nodeResume", nodeResume);
+
+		const count = await manager.syncResumedPlayers(node);
+
+		const player = manager.get("g1")!;
+		expect(count).toBe(1);
+		expect(nodeResume).toHaveBeenCalledWith(node, 1);
+		expect(player.current?.encoded).toBe("LIVE_ENC");
+		expect(player.position).toBe(45_000);
+		expect(player.paused).toBe(true);
+		expect(player.playing).toBe(false);
+		expect(player.volume).toBe(80);
+		expect(player.filters.timescale?.speed).toBe(1.2);
+		expect(player.queue.map((item) => (item as { encoded: string }).encoded)).toEqual(["QUEUED"]);
+		expect(player.voiceState).toEqual({}); // never restore stale Discord credentials
+		expect(send).toHaveBeenCalledWith(
+			"g1",
+			expect.objectContaining({ op: 4, d: expect.objectContaining({ channel_id: "vc1" }) }),
+		);
+		expect(playSpy).not.toHaveBeenCalled();
+	});
+
+	it("skips guilds that already have a local player", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, {});
+		manager.create({ guild: "g1", voiceChannel: "vc1" });
+		vi.spyOn(node.rest, "getPlayers").mockResolvedValue([{ guildId: "g1" }] as never);
+
+		expect(await manager.syncResumedPlayers(node)).toBe(0);
+		expect(manager.players.size).toBe(1);
 	});
 });
 
