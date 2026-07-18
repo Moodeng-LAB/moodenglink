@@ -5,7 +5,7 @@
 
 import { Collection } from "@discordjs/collection";
 import { EventEmitter } from "node:events";
-import type { ManagerEvents, ManagerOptions, SearchQuery } from "../types/Moodenglink";
+import type { ManagerEvents, ManagerOptions, ManagerPreset, QuickPlayOptions, QuickPlayResult, SearchPolicy, SearchQuery } from "../types/Moodenglink";
 import type {
 	LoadType,
 	PlaylistInfo,
@@ -18,6 +18,7 @@ import type {
 	VoiceServer,
 	VoiceState,
 	PlayerOptions,
+	PlayerDestroyOptions,
 } from "../types/Player";
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
@@ -37,6 +38,47 @@ export interface Moodenglink {
 	emit<E extends keyof ManagerEvents>(event: E, ...args: ManagerEvents[E]): boolean;
 }
 
+/** A query rejected by the configured {@link SearchPolicy}. */
+export class SearchPolicyError extends Error {
+	public readonly code = "SEARCH_POLICY_REJECTED";
+
+	constructor(
+		message: string,
+		public readonly query: string,
+	) {
+		super(message);
+		this.name = "SearchPolicyError";
+	}
+}
+
+function presetDefaults(preset?: ManagerPreset): Partial<ManagerOptions> {
+	switch (preset) {
+		case "minimal":
+			return { autoMove: false, voiceReconnectTries: 0 };
+		case "recommended":
+			return {
+				autoMove: true,
+				searchCache: true,
+				playerBehavior: { autoSkipOnError: true, destroyOnVoiceDisconnect: true },
+			};
+		case "resilient":
+			return {
+				autoMove: true,
+				autoResume: true,
+				searchCache: { ttl: 60_000, maxSize: 500 },
+				voiceReconnectTries: 5,
+				playerBehavior: { autoSkipOnError: true, destroyOnVoiceDisconnect: true },
+			};
+		default:
+			return {};
+	}
+}
+
+function domainMatches(hostname: string, rule: string): boolean {
+	const domain = rule.toLocaleLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
+	return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 export class Moodenglink extends EventEmitter {
 	public readonly options: ManagerOptions;
 	public readonly nodes = new Collection<string, Node>();
@@ -48,11 +90,17 @@ export class Moodenglink extends EventEmitter {
 	/** Optional search-result cache (enabled via `options.searchCache`). */
 	private readonly searchCache: TTLCache<string, SearchResult> | null;
 
+	/** Beginner-friendly constructor with safe caching, recovery and auto-skip defaults. */
+	public static simple(options: ManagerOptions): Moodenglink {
+		return new Moodenglink({ preset: "recommended", ...options });
+	}
+
 	constructor(options: ManagerOptions) {
 		super();
 		if (!options?.nodes?.length) throw new Error("Moodenglink requires at least one node.");
 		if (typeof options.send !== "function") throw new Error("Moodenglink requires a `send` function.");
 
+		const preset = presetDefaults(options.preset);
 		this.options = {
 			shards: 1,
 			clientName: "Moodenglink",
@@ -61,11 +109,16 @@ export class Moodenglink extends EventEmitter {
 			autoResume: false,
 			defaultSearchPlatform: "youtube",
 			trackPartial: [],
+			...preset,
 			...options,
+			playerBehavior: {
+				...preset.playerBehavior,
+				...options.playerBehavior,
+			},
 		};
 
-		if (options.searchCache) {
-			const cfg = options.searchCache === true ? {} : options.searchCache;
+		if (this.options.searchCache) {
+			const cfg = this.options.searchCache === true ? {} : this.options.searchCache;
 			this.searchCache = new TTLCache(cfg.ttl ?? 30_000, cfg.maxSize ?? 100);
 		} else {
 			this.searchCache = null;
@@ -166,8 +219,14 @@ export class Moodenglink extends EventEmitter {
 		const existing = this.players.get(options.guild);
 		if (existing) return existing;
 
-		const node = options.node ? this.nodes.get(options.node) : undefined;
-		const player = new (Structure.get("Player"))(this, options, node?.connected ? node : this.idealNode);
+		const defaults = this.options.playerDefaults;
+		const merged: PlayerOptions = {
+			...defaults,
+			...options,
+			data: { ...defaults?.data, ...options.data },
+		};
+		const node = merged.node ? this.nodes.get(merged.node) : undefined;
+		const player = new (Structure.get("Player"))(this, merged, node?.connected ? node : this.idealNode);
 		this.players.set(options.guild, player);
 		this.emit("playerCreate", player);
 		return player;
@@ -179,8 +238,8 @@ export class Moodenglink extends EventEmitter {
 	}
 
 	/** Destroys a guild's player, if any. */
-	public async destroy(guild: string): Promise<void> {
-		await this.players.get(guild)?.destroy();
+	public async destroy(guild: string, options: PlayerDestroyOptions = {}): Promise<void> {
+		await this.players.get(guild)?.destroy({ reason: "manager", ...options });
 	}
 
 	/* ------------------------------ searching ------------------------------ */
@@ -190,8 +249,9 @@ export class Moodenglink extends EventEmitter {
 	 * Accepts a raw string or a `{ query, source }` object.
 	 */
 	public async search(query: string | SearchQuery, requester?: unknown): Promise<SearchResult> {
-		const node = this.searchNode();
 		const raw = typeof query === "string" ? query : query.query;
+		this.assertSearchAllowed(raw);
+		const node = this.searchNode();
 		const source = (typeof query === "string" ? undefined : query.source) ?? this.options.defaultSearchPlatform;
 		const identifier = buildSearchIdentifier(raw, source as SearchPlatform);
 
@@ -220,6 +280,66 @@ export class Moodenglink extends EventEmitter {
 			});
 		}
 		return result;
+	}
+
+	/**
+	 * Searches, creates/joins a player, queues results and starts playback.
+	 * Intended as a small-bot convenience; every lower-level API remains available.
+	 */
+	public async play(options: QuickPlayOptions): Promise<QuickPlayResult> {
+		const { query, requester, addAll, ...playerOptions } = options;
+		const result = await this.search(query, requester);
+		const queued = result.loadType === "playlist" || addAll ? result.tracks : result.tracks.slice(0, 1);
+		if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
+
+		const player = this.create(playerOptions);
+		if (playerOptions.voiceChannel && player.voiceChannel !== playerOptions.voiceChannel) {
+			player.setVoiceChannel(playerOptions.voiceChannel);
+		} else if (!player.connected && player.state === "DISCONNECTED") {
+			player.connect();
+		}
+		player.queue.add(queued);
+		if (!player.playing && !player.paused) await player.play();
+		return { player, result, queued };
+	}
+
+	private assertSearchAllowed(query: string): void {
+		const policy = this.options.searchPolicy;
+		if (!policy) return;
+
+		let url: URL | null = null;
+		try {
+			url = new URL(query);
+		} catch {
+			// Lavalink-prefixed and ordinary searches are intentionally treated as text.
+		}
+
+		if (!url) {
+			if (policy.allowSearchQueries === false) {
+				throw new SearchPolicyError("Text and prefixed searches are disabled by searchPolicy.", query);
+			}
+		} else {
+			const protocol = url.protocol.toLocaleLowerCase();
+			const protocols = (policy.allowedProtocols ?? ["http:", "https:"]).map((value) =>
+				value.endsWith(":") ? value.toLocaleLowerCase() : `${value.toLocaleLowerCase()}:`,
+			);
+			if (!protocols.includes(protocol)) {
+				throw new SearchPolicyError(`URL protocol "${url.protocol}" is not allowed.`, query);
+			}
+
+			const hostname = url.hostname.toLocaleLowerCase();
+			if (policy.blockedDomains?.some((domain) => domainMatches(hostname, domain))) {
+				throw new SearchPolicyError(`Domain "${hostname}" is blocked.`, query);
+			}
+			if (policy.allowedDomains?.length && !policy.allowedDomains.some((domain) => domainMatches(hostname, domain))) {
+				throw new SearchPolicyError(`Domain "${hostname}" is not in the allow list.`, query);
+			}
+		}
+
+		const decision = policy.validate?.(query, url);
+		if (decision === false || typeof decision === "string") {
+			throw new SearchPolicyError(typeof decision === "string" ? decision : "Query rejected by searchPolicy.validate().", query);
+		}
 	}
 
 	private resolveLoadResult(res: { loadType: LoadType; data: unknown }, requester?: unknown): SearchResult {
@@ -333,7 +453,10 @@ export class Moodenglink extends EventEmitter {
 
 			if (!state.channel_id) {
 				// The bot was disconnected from voice.
-				void player.destroy();
+				player.handleVoiceDisconnect();
+				if (this.options.playerBehavior?.destroyOnVoiceDisconnect !== false) {
+					void player.destroy({ disconnect: false, reason: "voice-disconnect" });
+				}
 				return;
 			}
 
@@ -463,7 +586,7 @@ export class Moodenglink extends EventEmitter {
 
 	/** Cleanly tears everything down: destroys every player, node and plugin. */
 	public async destroyAll(): Promise<void> {
-		for (const player of this.players.values()) await player.destroy().catch(() => null);
+		for (const player of this.players.values()) await player.destroy({ reason: "shutdown" }).catch(() => null);
 		for (const node of this.nodes.values()) node.destroy();
 		for (const plugin of this.plugins.values()) plugin.unload(this);
 		this.plugins.clear();

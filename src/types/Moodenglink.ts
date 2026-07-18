@@ -7,7 +7,7 @@ import type { Collection } from "@discordjs/collection";
 import type { Node } from "../classes/Node";
 import type { Player } from "../classes/Player";
 import type { NodeOptions, NodeStats } from "./Node";
-import type { Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
+import type { PlayerDestroyContext, PlayerOptions, Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
 import type { SearchPlatform } from "../utils/sources";
 import type {
 	ChapterStartedEvent,
@@ -37,6 +37,47 @@ export interface SessionStore {
 	keys(): Promise<string[]> | string[];
 }
 
+/** Built-in defaults for common deployment sizes. Omit this to preserve v1 behaviour. */
+export type ManagerPreset = "minimal" | "recommended" | "resilient";
+
+/** Controls which direct URLs may be sent to Lavalink. Search text is unaffected by default. */
+export interface SearchPolicy {
+	/** Allowed URL protocols. Defaults to `["http:", "https:"]`. */
+	allowedProtocols?: string[];
+	/** If set, direct URLs must match one of these domains (subdomains also match). */
+	allowedDomains?: string[];
+	/** Direct URLs matching one of these domains are always rejected. */
+	blockedDomains?: string[];
+	/** Whether ordinary text/prefixed searches are allowed. Defaults to `true`. */
+	allowSearchQueries?: boolean;
+	/** Optional final application-specific check. Return `false` or a message to reject. */
+	validate?(query: string, url: URL | null): boolean | string;
+}
+
+/** Default lifecycle behaviour for every player. All switches are opt-in except voice cleanup. */
+export interface PlayerBehaviorOptions {
+	/** Advance after TrackStuck/TrackException. Defaults to `false`. */
+	autoSkipOnError?: boolean;
+	/** Destroy the player when Discord removes the bot from voice. Defaults to `true`. */
+	destroyOnVoiceDisconnect?: boolean;
+	/** Destroy the player after `queueEnd` is emitted. Defaults to `false`. */
+	destroyOnQueueEnd?: boolean;
+}
+
+/** One-call search, queue and play helper intended for small bots and first-time users. */
+export interface QuickPlayOptions extends PlayerOptions {
+	query: string | SearchQuery;
+	requester?: unknown;
+	/** Add all search results instead of only the first. Playlists are always added in full. */
+	addAll?: boolean;
+}
+
+export interface QuickPlayResult {
+	player: Player;
+	result: import("./Player").SearchResult;
+	queued: Track[];
+}
+
 export interface ManagerOptions {
 	/** The Lavalink nodes to connect to. */
 	nodes: NodeOptions[];
@@ -46,6 +87,8 @@ export interface ManagerOptions {
 	clientName?: string;
 	/** Total shard count of the bot. Defaults to `1`. */
 	shards?: number;
+	/** Apply an additive set of defaults. Omit to preserve the original v1 defaults. */
+	preset?: ManagerPreset;
 	/** Whether to queue a related track when the queue empties. Defaults to `false`. */
 	autoPlay?: boolean;
 	/**
@@ -81,6 +124,12 @@ export interface ManagerOptions {
 	searchCache?: boolean | { ttl?: number; maxSize?: number };
 	/** Custom node-ordering strategy used for load balancing. */
 	sorter?: (nodes: Collection<string, Node>) => Collection<string, Node>;
+	/** Defaults merged into every call to {@link Moodenglink.create}. */
+	playerDefaults?: Omit<Partial<PlayerOptions>, "guild">;
+	/** Shared player lifecycle behaviour. */
+	playerBehavior?: PlayerBehaviorOptions;
+	/** Optional allow/deny policy for direct URLs and search queries. */
+	searchPolicy?: SearchPolicy;
 	/** REQUIRED — forwards a raw OP 4 payload to the Discord gateway. */
 	send(guildId: string, payload: VoiceGatewayPayload): void;
 }
@@ -103,7 +152,7 @@ export interface ManagerEvents {
 	nodeStats: [node: Node, stats: NodeStats];
 
 	playerCreate: [player: Player];
-	playerDestroy: [player: Player];
+	playerDestroy: [player: Player, context: PlayerDestroyContext];
 	playerMove: [player: Player, oldNode: Node, newNode: Node];
 	playerDisconnect: [player: Player, oldChannel: string | null];
 	playerStateUpdate: [player: Player];

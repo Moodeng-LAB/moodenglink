@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Moodenglink } from "../src/classes/Moodenglink";
+import { Moodenglink, SearchPolicyError } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
 import { Player } from "../src/classes/Player";
 import { MemoryStore } from "../src/classes/stores";
@@ -36,6 +36,20 @@ describe("Moodenglink constructor", () => {
 		expect(manager.nodes.size).toBe(1);
 		expect(manager.options.defaultSearchPlatform).toBe("youtube");
 		expect(manager.options.autoMove).toBe(true);
+	});
+
+	it("offers additive presets without changing the default constructor", () => {
+		const { manager } = buildManager();
+		const simple = Moodenglink.simple({
+			nodes: [{ host: "localhost", identifier: "simple" }],
+			clientId: "bot",
+			send: () => {},
+		});
+
+		expect(manager.options.searchCache).toBeUndefined();
+		expect(simple.options.preset).toBe("recommended");
+		expect(simple.options.searchCache).toBe(true);
+		expect(simple.options.playerBehavior?.autoSkipOnError).toBe(true);
 	});
 });
 
@@ -150,6 +164,31 @@ describe("Moodenglink.search", () => {
 		expect((second.tracks[0].pluginInfo as Record<string, unknown>).tampered).toBeUndefined();
 		expect(second.tracks[0].title).toBe("Never Gonna Give You Up");
 	});
+
+	it("enforces direct URL allow and block lists before making a REST request", async () => {
+		const { manager, node } = buildManager({
+			searchPolicy: {
+				allowedDomains: ["youtube.com"],
+				blockedDomains: ["music.youtube.com"],
+			},
+		});
+		const load = vi.spyOn(node.rest, "loadTracks").mockResolvedValue({ loadType: "empty", data: {} });
+
+		await expect(manager.search("https://example.com/watch?v=x")).rejects.toBeInstanceOf(SearchPolicyError);
+		await expect(manager.search("https://music.youtube.com/watch?v=x")).rejects.toThrow(/blocked/);
+		await manager.search("https://www.youtube.com/watch?v=x");
+		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("supports a custom search policy while allowing ordinary text by default", async () => {
+		const { manager, node } = buildManager({
+			searchPolicy: { validate: (query: string) => (query.includes("forbidden") ? "No forbidden searches." : true) },
+		});
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({ loadType: "empty", data: {} });
+
+		await expect(manager.search("forbidden song")).rejects.toThrow("No forbidden searches.");
+		await expect(manager.search("ordinary song")).resolves.toMatchObject({ loadType: "empty" });
+	});
 });
 
 describe("Moodenglink players", () => {
@@ -163,6 +202,63 @@ describe("Moodenglink players", () => {
 
 		await manager.destroy("g1");
 		expect(manager.get("g1")).toBeUndefined();
+	});
+
+	it("merges player defaults with per-player options and data", () => {
+		const { manager } = buildManager({
+			playerDefaults: { volume: 80, selfDeafen: false, data: { locale: "th", shared: "default" } },
+		});
+		const player = manager.create({ guild: "g1", volume: 120, data: { shared: "override" } });
+
+		expect(player.volume).toBe(120);
+		expect(player.selfDeafen).toBe(false);
+		expect(player.data).toEqual({ locale: "th", shared: "override" });
+	});
+
+	it("reports a detailed destroy reason and stays compatible with manager.destroy", async () => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const destroyed = vi.fn();
+		manager.on("playerDestroy", destroyed);
+		manager.create({ guild: "g1", voiceChannel: "vc1" });
+
+		await manager.destroy("g1");
+
+		expect(destroyed).toHaveBeenCalledWith(expect.any(Player), { reason: "manager", disconnected: true });
+	});
+
+	it("preserves destroy(false) and emits a manual non-disconnecting context", async () => {
+		const { manager, node, send } = buildManager();
+		vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const destroyed = vi.fn();
+		manager.on("playerDestroy", destroyed);
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+
+		await player.destroy(false);
+
+		expect(send).not.toHaveBeenCalled();
+		expect(destroyed).toHaveBeenCalledWith(player, { reason: "manual", disconnected: false });
+	});
+
+	it("searches, queues, connects and starts playback with one play call", async () => {
+		const { manager, node, send } = buildManager();
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({
+			loadType: "search",
+			data: [makeTrackData({ title: "First" }, "E1"), makeTrackData({ title: "Second" }, "E2")],
+		});
+		const update = vi.spyOn(node.rest, "updatePlayer").mockResolvedValue({} as never);
+
+		const { player, queued } = await manager.play({
+			guild: "g1",
+			voiceChannel: "vc1",
+			query: "lofi",
+			requester: "user",
+		});
+
+		expect(queued.map((track) => track.encoded)).toEqual(["E1"]);
+		expect(player.current?.encoded).toBe("E1");
+		expect(send).toHaveBeenCalledOnce();
+		expect(update).toHaveBeenCalledWith("g1", expect.objectContaining({ track: { encoded: "E1", userData: {} } }), false);
 	});
 });
 
@@ -360,5 +456,39 @@ describe("Moodenglink.updateVoiceState", () => {
 			d: { guild_id: "g1", user_id: "someone-else", session_id: "sess", channel_id: "vc1" },
 		});
 		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("can retain a disconnected player when voice auto-destroy is disabled", () => {
+		const { manager } = buildManager({ playerBehavior: { destroyOnVoiceDisconnect: false } });
+		const disconnected = vi.fn();
+		manager.on("playerDisconnect", disconnected);
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+
+		manager.updateVoiceState({
+			t: "VOICE_STATE_UPDATE",
+			d: { guild_id: "g1", user_id: "bot-1", session_id: "sess", channel_id: null },
+		});
+
+		expect(manager.get("g1")).toBe(player);
+		expect(player.voiceChannel).toBeNull();
+		expect(player.state).toBe("DISCONNECTED");
+		expect(disconnected).toHaveBeenCalledWith(player, "vc1");
+	});
+
+	it("destroys on Discord voice removal with a typed reason by default", async () => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const destroyed = vi.fn();
+		manager.on("playerDestroy", destroyed);
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+
+		manager.updateVoiceState({
+			t: "VOICE_STATE_UPDATE",
+			d: { guild_id: "g1", user_id: "bot-1", session_id: "sess", channel_id: null },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(manager.get("g1")).toBeUndefined();
+		expect(destroyed).toHaveBeenCalledWith(player, { reason: "voice-disconnect", disconnected: false });
 	});
 });

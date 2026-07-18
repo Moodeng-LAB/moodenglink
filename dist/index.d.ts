@@ -3,85 +3,6 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 
 /**
- * Types describing a Lavalink node connection, its options and reported stats.
- * @module types/Node
- */
-interface NodeOptions {
-    /** The host of the node (e.g. `localhost`). */
-    host: string;
-    /** The port of the node. Defaults to `2333`. */
-    port?: number;
-    /** The password/authorization of the node. */
-    password?: string;
-    /** Whether to connect over TLS (wss/https). */
-    secure?: boolean;
-    /** A friendly identifier used for logs and lookups. */
-    identifier?: string;
-    /** How many times to retry a lost connection. Defaults to `5`. */
-    retryAmount?: number;
-    /** Delay in ms between reconnect attempts. Defaults to `5000`. */
-    retryDelay?: number;
-    /** REST request timeout in ms. Defaults to `10000`. */
-    requestTimeout?: number;
-    /** Session resuming timeout in seconds. Defaults to `60`. */
-    resumeTimeout?: number;
-    /** Priority weight when picking a node — higher wins ties. Defaults to `0`. */
-    priority?: number;
-    /** Whether this node may be used for searching. Defaults to `true`. */
-    search?: boolean;
-    /** Whether this node may be used for playback. Defaults to `true`. */
-    playback?: boolean;
-}
-interface NodeInfo {
-    version: {
-        semver: string;
-        major: number;
-        minor: number;
-        patch: number;
-        preRelease: string | null;
-        build: string | null;
-    };
-    buildTime: number;
-    git: {
-        branch: string;
-        commit: string;
-        commitTime: number;
-    };
-    jvm: string;
-    lavaplayer: string;
-    sourceManagers: string[];
-    filters: string[];
-    plugins: {
-        name: string;
-        version: string;
-    }[];
-}
-interface MemoryStats {
-    free: number;
-    used: number;
-    allocated: number;
-    reservable: number;
-}
-interface CPUStats {
-    cores: number;
-    systemLoad: number;
-    lavalinkLoad: number;
-}
-interface FrameStats {
-    sent: number;
-    nulled: number;
-    deficit: number;
-}
-interface NodeStats {
-    players: number;
-    playingPlayers: number;
-    uptime: number;
-    memory: MemoryStats;
-    cpu: CPUStats;
-    frameStats: FrameStats | null;
-}
-
-/**
  * Types for players, tracks, search results and voice payloads.
  * @module types/Player
  */
@@ -92,6 +13,20 @@ declare enum RepeatMode {
     NONE = 0,
     TRACK = 1,
     QUEUE = 2
+}
+/** Stable machine-readable reason attached to the `playerDestroy` event. */
+type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable";
+/** Options for {@link Player.destroy}. Passing a boolean remains supported for v1 compatibility. */
+interface PlayerDestroyOptions {
+    /** Leave Discord voice before removing the player. Defaults to `true`. */
+    disconnect?: boolean;
+    /** Why the player is being removed. Defaults to `"manual"`. */
+    reason?: PlayerDestroyReason;
+}
+/** Metadata emitted with `playerDestroy`. */
+interface PlayerDestroyContext {
+    reason: PlayerDestroyReason;
+    disconnected: boolean;
 }
 interface PlayerOptions {
     /** The guild the player belongs to. */
@@ -186,6 +121,19 @@ interface UnresolvedTrack {
 }
 /** Anything that can live in the {@link Queue}: a resolved or unresolved track. */
 type QueueItem = Track | UnresolvedTrack;
+/** Declarative matcher used by Queue query helpers. All supplied fields must match. */
+interface QueueQuery {
+    title?: string | RegExp;
+    author?: string | RegExp;
+    uri?: string | RegExp;
+    sourceName?: string | RegExp;
+    requester?: unknown;
+    minDuration?: number;
+    maxDuration?: number;
+    predicate?: (track: QueueItem, index: number) => boolean;
+}
+/** A fuzzy text query, declarative query, or custom predicate. */
+type QueueMatcher = string | QueueQuery | ((track: QueueItem, index: number) => boolean);
 type LoadType = "track" | "playlist" | "search" | "empty" | "error";
 interface PlaylistInfo {
     name: string;
@@ -228,6 +176,85 @@ interface VoiceGatewayPayload {
         self_mute: boolean;
         self_deaf: boolean;
     };
+}
+
+/**
+ * Types describing a Lavalink node connection, its options and reported stats.
+ * @module types/Node
+ */
+interface NodeOptions {
+    /** The host of the node (e.g. `localhost`). */
+    host: string;
+    /** The port of the node. Defaults to `2333`. */
+    port?: number;
+    /** The password/authorization of the node. */
+    password?: string;
+    /** Whether to connect over TLS (wss/https). */
+    secure?: boolean;
+    /** A friendly identifier used for logs and lookups. */
+    identifier?: string;
+    /** How many times to retry a lost connection. Defaults to `5`. */
+    retryAmount?: number;
+    /** Delay in ms between reconnect attempts. Defaults to `5000`. */
+    retryDelay?: number;
+    /** REST request timeout in ms. Defaults to `10000`. */
+    requestTimeout?: number;
+    /** Session resuming timeout in seconds. Defaults to `60`. */
+    resumeTimeout?: number;
+    /** Priority weight when picking a node — higher wins ties. Defaults to `0`. */
+    priority?: number;
+    /** Whether this node may be used for searching. Defaults to `true`. */
+    search?: boolean;
+    /** Whether this node may be used for playback. Defaults to `true`. */
+    playback?: boolean;
+}
+interface NodeInfo {
+    version: {
+        semver: string;
+        major: number;
+        minor: number;
+        patch: number;
+        preRelease: string | null;
+        build: string | null;
+    };
+    buildTime: number;
+    git: {
+        branch: string;
+        commit: string;
+        commitTime: number;
+    };
+    jvm: string;
+    lavaplayer: string;
+    sourceManagers: string[];
+    filters: string[];
+    plugins: {
+        name: string;
+        version: string;
+    }[];
+}
+interface MemoryStats {
+    free: number;
+    used: number;
+    allocated: number;
+    reservable: number;
+}
+interface CPUStats {
+    cores: number;
+    systemLoad: number;
+    lavalinkLoad: number;
+}
+interface FrameStats {
+    sent: number;
+    nulled: number;
+    deficit: number;
+}
+interface NodeStats {
+    players: number;
+    playingPlayers: number;
+    uptime: number;
+    memory: MemoryStats;
+    cpu: CPUStats;
+    frameStats: FrameStats | null;
 }
 
 /**
@@ -718,6 +745,12 @@ declare class Queue extends Array<QueueItem> {
     move(from: number, to: number): void;
     /** Removes duplicate tracks, keeping the first occurrence. */
     dedupe(): void;
+    /** Returns every upcoming item matching fuzzy text, fields, a RegExp, or a predicate. */
+    findTracks(matcher: QueueMatcher): QueueItem[];
+    /** Returns the first upcoming matching item without changing the queue. */
+    findTrack(matcher: QueueMatcher): QueueItem | undefined;
+    /** Removes and returns every upcoming matching item, preserving their queue order. */
+    removeTracks(matcher: QueueMatcher): QueueItem[];
 }
 
 interface PlayOptions {
@@ -779,6 +812,8 @@ declare class Player {
      * autoplay), a skip advances to the next track. Cleared as soon as it's read.
      */
     private endIntent;
+    /** Makes destroy idempotent when voice, queue and user cleanup race. */
+    private destroyPromise;
     constructor(manager: Moodenglink, options: PlayerOptions, node: Node);
     /** The track currently playing, if any. */
     get current(): Track | null;
@@ -786,6 +821,8 @@ declare class Player {
     connect(): this;
     /** Leaves the voice channel but keeps the player and queue alive. */
     disconnect(): this;
+    /** @internal Applies a Discord-side disconnect without sending another OP 4. */
+    handleVoiceDisconnect(): void;
     /** Moves the player to another voice channel. */
     setVoiceChannel(channelId: string): this;
     /** Rebinds the text channel used for informational events. */
@@ -812,8 +849,11 @@ declare class Player {
     setRepeatMode(mode: RepeatMode): this;
     /** Toggles autoplay of related tracks when the queue empties. */
     setAutoplay(state: boolean): this;
-    /** Destroys the player: leaves voice, tears down the node player, forgets it. */
-    destroy(disconnect?: boolean): Promise<void>;
+    /**
+     * Destroys the player and emits a machine-readable reason.
+     * A boolean argument remains supported for backwards compatibility.
+     */
+    destroy(options?: boolean | PlayerDestroyOptions): Promise<void>;
     /** Stores an arbitrary value on the player. Chainable. */
     set<T = unknown>(key: string, value: T): this;
     /** Reads a previously-stored value from the player. */
@@ -846,6 +886,7 @@ declare class Player {
     handleTrackStuck(payload: TrackStuckEvent): void;
     /** @internal */
     handleTrackException(payload: TrackExceptionEvent): void;
+    private autoSkipPlaybackError;
     /**
      * Voice close codes worth recovering from — session invalidations, timeouts,
      * voice-server crashes and abnormal drops. Fatal ones (4004 auth failed,
@@ -876,17 +917,48 @@ declare function isUrl(input: string): boolean;
  */
 declare function buildSearchIdentifier(query: string, platform?: SearchPlatform): string;
 
-/**
- * Top-level manager option and event types.
- * @module types/Moodenglink
- */
-
 /** A function that persists/restores player sessions across restarts. */
 interface SessionStore {
     get(key: string): Promise<string | null> | string | null;
     set(key: string, value: string): Promise<unknown> | unknown;
     delete(key: string): Promise<unknown> | unknown;
     keys(): Promise<string[]> | string[];
+}
+/** Built-in defaults for common deployment sizes. Omit this to preserve v1 behaviour. */
+type ManagerPreset = "minimal" | "recommended" | "resilient";
+/** Controls which direct URLs may be sent to Lavalink. Search text is unaffected by default. */
+interface SearchPolicy {
+    /** Allowed URL protocols. Defaults to `["http:", "https:"]`. */
+    allowedProtocols?: string[];
+    /** If set, direct URLs must match one of these domains (subdomains also match). */
+    allowedDomains?: string[];
+    /** Direct URLs matching one of these domains are always rejected. */
+    blockedDomains?: string[];
+    /** Whether ordinary text/prefixed searches are allowed. Defaults to `true`. */
+    allowSearchQueries?: boolean;
+    /** Optional final application-specific check. Return `false` or a message to reject. */
+    validate?(query: string, url: URL | null): boolean | string;
+}
+/** Default lifecycle behaviour for every player. All switches are opt-in except voice cleanup. */
+interface PlayerBehaviorOptions {
+    /** Advance after TrackStuck/TrackException. Defaults to `false`. */
+    autoSkipOnError?: boolean;
+    /** Destroy the player when Discord removes the bot from voice. Defaults to `true`. */
+    destroyOnVoiceDisconnect?: boolean;
+    /** Destroy the player after `queueEnd` is emitted. Defaults to `false`. */
+    destroyOnQueueEnd?: boolean;
+}
+/** One-call search, queue and play helper intended for small bots and first-time users. */
+interface QuickPlayOptions extends PlayerOptions {
+    query: string | SearchQuery;
+    requester?: unknown;
+    /** Add all search results instead of only the first. Playlists are always added in full. */
+    addAll?: boolean;
+}
+interface QuickPlayResult {
+    player: Player;
+    result: SearchResult;
+    queued: Track[];
 }
 interface ManagerOptions {
     /** The Lavalink nodes to connect to. */
@@ -897,6 +969,8 @@ interface ManagerOptions {
     clientName?: string;
     /** Total shard count of the bot. Defaults to `1`. */
     shards?: number;
+    /** Apply an additive set of defaults. Omit to preserve the original v1 defaults. */
+    preset?: ManagerPreset;
     /** Whether to queue a related track when the queue empties. Defaults to `false`. */
     autoPlay?: boolean;
     /**
@@ -935,6 +1009,12 @@ interface ManagerOptions {
     };
     /** Custom node-ordering strategy used for load balancing. */
     sorter?: (nodes: Collection<string, Node>) => Collection<string, Node>;
+    /** Defaults merged into every call to {@link Moodenglink.create}. */
+    playerDefaults?: Omit<Partial<PlayerOptions>, "guild">;
+    /** Shared player lifecycle behaviour. */
+    playerBehavior?: PlayerBehaviorOptions;
+    /** Optional allow/deny policy for direct URLs and search queries. */
+    searchPolicy?: SearchPolicy;
     /** REQUIRED — forwards a raw OP 4 payload to the Discord gateway. */
     send(guildId: string, payload: VoiceGatewayPayload): void;
 }
@@ -957,7 +1037,7 @@ interface ManagerEvents {
     nodeRaw: [payload: unknown];
     nodeStats: [node: Node, stats: NodeStats];
     playerCreate: [player: Player];
-    playerDestroy: [player: Player];
+    playerDestroy: [player: Player, context: PlayerDestroyContext];
     playerMove: [player: Player, oldNode: Node, newNode: Node];
     playerDisconnect: [player: Player, oldChannel: string | null];
     playerStateUpdate: [player: Player];
@@ -998,6 +1078,12 @@ declare abstract class Plugin {
  * @module classes/Moodenglink
  */
 
+/** A query rejected by the configured {@link SearchPolicy}. */
+declare class SearchPolicyError extends Error {
+    readonly query: string;
+    readonly code = "SEARCH_POLICY_REJECTED";
+    constructor(message: string, query: string);
+}
 interface Moodenglink {
     on<E extends keyof ManagerEvents>(event: E, listener: (...args: ManagerEvents[E]) => void): this;
     once<E extends keyof ManagerEvents>(event: E, listener: (...args: ManagerEvents[E]) => void): this;
@@ -1012,6 +1098,8 @@ declare class Moodenglink extends EventEmitter {
     initialized: boolean;
     /** Optional search-result cache (enabled via `options.searchCache`). */
     private readonly searchCache;
+    /** Beginner-friendly constructor with safe caching, recovery and auto-skip defaults. */
+    static simple(options: ManagerOptions): Moodenglink;
     constructor(options: ManagerOptions);
     /**
      * Registers the bot's client id and connects every node.
@@ -1035,12 +1123,18 @@ declare class Moodenglink extends EventEmitter {
     /** Gets an existing player. */
     get(guild: string): Player | undefined;
     /** Destroys a guild's player, if any. */
-    destroy(guild: string): Promise<void>;
+    destroy(guild: string, options?: PlayerDestroyOptions): Promise<void>;
     /**
      * Resolves a query into playable tracks via a node's `loadtracks` endpoint.
      * Accepts a raw string or a `{ query, source }` object.
      */
     search(query: string | SearchQuery, requester?: unknown): Promise<SearchResult>;
+    /**
+     * Searches, creates/joins a player, queues results and starts playback.
+     * Intended as a small-bot convenience; every lower-level API remains available.
+     */
+    play(options: QuickPlayOptions): Promise<QuickPlayResult>;
+    private assertSearchAllowed;
     private resolveLoadResult;
     /** Decodes a base64 track back into a {@link Track}. */
     decodeTrack(encoded: string, requester?: unknown): Promise<Track>;
@@ -1231,6 +1325,6 @@ declare class TTLCache<K, V> {
  * @packageDocumentation
  */
 
-declare const version = "1.0.0";
+declare const version = "1.5.0";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };

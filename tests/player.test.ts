@@ -21,11 +21,12 @@ function endEvent(reason: TrackEndReason, encoded = "OLD"): TrackEndEvent {
 	};
 }
 
-function build() {
+function build(extra: Record<string, unknown> = {}) {
 	const manager = new Moodenglink({
 		nodes: [{ host: "h", port: 1, password: "p", identifier: "n1" }],
 		clientId: "bot",
 		send: vi.fn(),
+		...extra,
 	});
 	const node = manager.nodes.get("n1") as Node;
 	node.connected = true;
@@ -75,6 +76,19 @@ describe("Player.handleTrackEnd — advancing", () => {
 
 		expect(player.queue.previous.length).toBe(50);
 		expect(player.queue.previous[0]?.encoded).toBe("newest");
+	});
+
+	it("can automatically destroy an empty player after queueEnd", async () => {
+		const { manager, node, player } = build({ playerBehavior: { destroyOnQueueEnd: true } });
+		vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const destroyed = vi.fn();
+		manager.on("playerDestroy", destroyed);
+		player.queue.current = track("t1");
+
+		await player.handleTrackEnd(endEvent("finished"));
+
+		expect(manager.get("g1")).toBeUndefined();
+		expect(destroyed).toHaveBeenCalledWith(player, { reason: "queue-end", disconnected: true });
 	});
 });
 

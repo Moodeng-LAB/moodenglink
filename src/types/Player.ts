@@ -13,6 +13,23 @@ export enum RepeatMode {
 	QUEUE = 2,
 }
 
+/** Stable machine-readable reason attached to the `playerDestroy` event. */
+export type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable";
+
+/** Options for {@link Player.destroy}. Passing a boolean remains supported for v1 compatibility. */
+export interface PlayerDestroyOptions {
+	/** Leave Discord voice before removing the player. Defaults to `true`. */
+	disconnect?: boolean;
+	/** Why the player is being removed. Defaults to `"manual"`. */
+	reason?: PlayerDestroyReason;
+}
+
+/** Metadata emitted with `playerDestroy`. */
+export interface PlayerDestroyContext {
+	reason: PlayerDestroyReason;
+	disconnected: boolean;
+}
+
 export interface PlayerOptions {
 	/** The guild the player belongs to. */
 	guild: string;
@@ -112,6 +129,21 @@ export interface UnresolvedTrack {
 
 /** Anything that can live in the {@link Queue}: a resolved or unresolved track. */
 export type QueueItem = Track | UnresolvedTrack;
+
+/** Declarative matcher used by Queue query helpers. All supplied fields must match. */
+export interface QueueQuery {
+	title?: string | RegExp;
+	author?: string | RegExp;
+	uri?: string | RegExp;
+	sourceName?: string | RegExp;
+	requester?: unknown;
+	minDuration?: number;
+	maxDuration?: number;
+	predicate?: (track: QueueItem, index: number) => boolean;
+}
+
+/** A fuzzy text query, declarative query, or custom predicate. */
+export type QueueMatcher = string | QueueQuery | ((track: QueueItem, index: number) => boolean);
 
 export type LoadType = "track" | "playlist" | "search" | "empty" | "error";
 

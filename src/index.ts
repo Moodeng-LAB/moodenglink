@@ -6,7 +6,7 @@
  */
 
 // Core classes
-export { Moodenglink } from "./classes/Moodenglink";
+export { Moodenglink, SearchPolicyError } from "./classes/Moodenglink";
 export { Moodenglink as Manager } from "./classes/Moodenglink";
 export { Node } from "./classes/Node";
 export { Player } from "./classes/Player";
@@ -38,4 +38,4 @@ export * from "./types/Filters";
 export * from "./types/Op";
 export * from "./types/Rest";
 
-export const version = "1.0.0";
+export const version = "1.5.0";
