@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Moodenglink } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
 import type { Player } from "../src/classes/Player";
+import { MemoryStore } from "../src/classes/stores";
 import { RepeatMode, type Track } from "../src/types/Player";
 import { EventTypes, type TrackEndEvent, type TrackEndReason } from "../src/types/Op";
 import { buildTrack } from "../src/utils/utils";
@@ -11,7 +12,7 @@ function track(id: string): Track {
 	return buildTrack(makeTrackData({ identifier: id, uri: `https://x/${id}` }, id));
 }
 
-function endEvent(reason: TrackEndReason, encoded = "OLD"): TrackEndEvent {
+function endEvent(reason: TrackEndReason, encoded = "t1"): TrackEndEvent {
 	return {
 		op: "event" as never,
 		type: EventTypes.TrackEndEvent,
@@ -72,7 +73,7 @@ describe("Player.handleTrackEnd — advancing", () => {
 		player.queue.previous = Array.from({ length: 50 }, (_, i) => track(`h${i}`));
 		player.queue.current = track("newest");
 
-		await player.handleTrackEnd(endEvent("finished"));
+		await player.handleTrackEnd(endEvent("finished", "newest"));
 
 		expect(player.queue.previous.length).toBe(50);
 		expect(player.queue.previous[0]?.encoded).toBe("newest");
@@ -215,6 +216,30 @@ describe("Player.handleTrackEnd — stop vs skip intent", () => {
 		expect(player.current?.encoded).toBe("t2"); // advanced normally, intent was cleared
 	});
 
+	it("ignores a delayed stopped event after a newer track has started", async () => {
+		const { player } = ctx;
+		player.queue.current = track("t1");
+		await player.stop(false);
+		player.queue.current = track("t2");
+		player.playing = true;
+
+		await player.handleTrackEnd(endEvent("stopped", "t1"));
+
+		expect(player.current?.encoded).toBe("t2");
+		expect(player.playing).toBe(true);
+	});
+
+	it("ignores an orphan stopped event instead of advancing twice", async () => {
+		const { player } = ctx;
+		player.queue.current = track("t1");
+		player.queue.add(track("t2"));
+
+		await player.handleTrackEnd(endEvent("stopped", "t1"));
+
+		expect(player.current?.encoded).toBe("t1");
+		expect(player.queue.map((item) => item.encoded)).toEqual(["t2"]);
+	});
+
 	it("replaced and cleanup ends are no-ops (no advance, no queueEnd)", async () => {
 		const { manager, player, update } = ctx;
 		const queueEnd = vi.fn();
@@ -305,5 +330,86 @@ describe("Player.handleTrackEnd — autoplay gating", () => {
 		await player.handleTrackEnd(endEvent("stopped"));
 
 		expect(autoplay).not.toHaveBeenCalled();
+	});
+});
+
+describe("Player command transactions", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it("restores a dequeued item when play fails", async () => {
+		const { player, update } = build();
+		player.queue.add(track("t1"));
+		update.mockRejectedValueOnce(new Error("node unavailable"));
+
+		await expect(player.play()).rejects.toThrow("node unavailable");
+
+		expect(player.current).toBeNull();
+		expect(player.queue.map((item) => item.encoded)).toEqual(["t1"]);
+	});
+
+	it("removes skipped items before the TrackEnd race", async () => {
+		const { player, update } = build();
+		player.queue.current = track("t1");
+		player.queue.add([track("t2"), track("t3"), track("t4")]);
+		update.mockImplementation(async (_guild, body) => {
+			if ((body as { track?: { encoded?: string | null } }).track?.encoded === null) {
+				await player.handleTrackEnd(endEvent("stopped", "t1"));
+			}
+			return {} as never;
+		});
+
+		await player.skip(3);
+
+		expect(player.current?.encoded).toBe("t4");
+		expect(player.queue).toHaveLength(0);
+	});
+
+	it("clears before a synchronous stop TrackEnd and emits queueEnd once", async () => {
+		const { manager, player, update } = build();
+		const queueEnd = vi.fn();
+		manager.on("queueEnd", queueEnd);
+		player.queue.current = track("t1");
+		player.queue.add(track("t2"));
+		update.mockImplementation(async (_guild, body) => {
+			if ((body as { track?: { encoded?: string | null } }).track?.encoded === null) {
+				await player.handleTrackEnd(endEvent("stopped", "t1"));
+			}
+			return {} as never;
+		});
+
+		await player.stop(true);
+
+		expect(player.queue).toHaveLength(0);
+		expect(queueEnd).toHaveBeenCalledOnce();
+	});
+
+	it("does not issue an extra skip for TrackExceptionEvent", () => {
+		const { player, update } = build({ playerBehavior: { autoSkipOnError: true } });
+		player.playing = true;
+		player.queue.current = track("t1");
+
+		player.handleTrackException({
+			op: "event",
+			type: EventTypes.TrackExceptionEvent,
+			guildId: "g1",
+			track: makeTrackData({ identifier: "t1" }, "t1"),
+			exception: { message: "decode failed", severity: "fault", cause: "test" },
+		} as never);
+
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("persists the destination node after failover", async () => {
+		const store = new MemoryStore();
+		const { manager, player } = build({ store });
+		const target = manager.addNode({ host: "h2", identifier: "n2" });
+		target.connected = true;
+		target.stats = makeStats() as never;
+		vi.spyOn(target.rest, "updatePlayer").mockResolvedValue({} as never);
+
+		await player.moveNode(target);
+
+		const saved = JSON.parse((await store.get("moodenglink:player:g1"))!);
+		expect(saved.node).toBe("n2");
 	});
 });

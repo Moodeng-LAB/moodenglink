@@ -8,11 +8,11 @@
 // Core classes
 export { Moodenglink, SearchPolicyError } from "./classes/Moodenglink";
 export { Moodenglink as Manager } from "./classes/Moodenglink";
-export { Node } from "./classes/Node";
+export { Node, NodeCapabilityError } from "./classes/Node";
 export { Player } from "./classes/Player";
 export type { PlayOptions } from "./classes/Player";
 export { Queue } from "./classes/Queue";
-export { Rest, RestError } from "./classes/Rest";
+export { Rest, RestError, RestNetworkError } from "./classes/Rest";
 export { Filters } from "./classes/Filters";
 export { Plugin } from "./classes/Plugin";
 export { Structure } from "./classes/Structure";
@@ -38,4 +38,4 @@ export * from "./types/Filters";
 export * from "./types/Op";
 export * from "./types/Rest";
 
-export const version = "1.5.0";
+export { version } from "./version";

@@ -53,11 +53,18 @@ export class Filters {
 	/** Pushes the current filter state to the node. Chainable. */
 	public async apply(): Promise<this> {
 		await this.player.node.rest.updatePlayer(this.player.guild, { filters: this.toJSON() });
+		await this.player.save();
 		return this;
 	}
 
 	/** Merges a partial filter payload into the current state and applies it. */
 	public async set(payload: FilterPayload): Promise<this> {
+		this.load(payload);
+		return this.apply();
+	}
+
+	/** Hydrates local filter state without issuing a REST request. */
+	public load(payload: FilterPayload): this {
 		if (payload.volume !== undefined) this.volume = payload.volume;
 		if (payload.equalizer !== undefined) this.equalizer = payload.equalizer;
 		if (payload.karaoke !== undefined) this.karaoke = payload.karaoke;
@@ -69,7 +76,7 @@ export class Filters {
 		if (payload.channelMix !== undefined) this.channelMix = payload.channelMix;
 		if (payload.lowPass !== undefined) this.lowPass = payload.lowPass;
 		if (payload.pluginFilters !== undefined) this.pluginFilters = payload.pluginFilters;
-		return this.apply();
+		return this;
 	}
 
 	/* ------------------------------- setters ------------------------------- */

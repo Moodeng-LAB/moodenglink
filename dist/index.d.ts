@@ -207,6 +207,27 @@ interface NodeOptions {
     search?: boolean;
     /** Whether this node may be used for playback. Defaults to `true`. */
     playback?: boolean;
+    /**
+     * Capabilities this node is expected to expose after READY. Missing
+     * capabilities emit `nodeCapabilityMismatch`; `strict` also rejects the node.
+     */
+    capabilities?: NodeCapabilityRequirements;
+}
+/** Sources, filters and plugins a node is expected to provide. */
+interface NodeCapabilityRequirements {
+    sources?: string[];
+    filters?: string[];
+    plugins?: string[];
+    /** Remove the node when a requirement is missing or `/info` is unavailable. */
+    strict?: boolean;
+}
+/** Result returned by {@link Node.validateCapabilities}. */
+interface NodeCapabilityReport {
+    available: boolean;
+    valid: boolean;
+    missingSources: string[];
+    missingFilters: string[];
+    missingPlugins: string[];
 }
 interface NodeInfo {
     version: {
@@ -602,10 +623,36 @@ declare class Rest {
     /** Clears all SponsorBlock categories for a guild. */
     clearSponsorBlockCategories(guildId: string): Promise<void>;
 }
-/** Error thrown for non-2xx Lavalink REST responses (carries the HTTP status). */
+interface RestErrorDetails {
+    method?: string;
+    endpoint?: string;
+    body?: unknown;
+    retryable?: boolean;
+    retryAfterMs?: number;
+}
+/** Error thrown for non-2xx Lavalink REST responses with structured diagnostics. */
 declare class RestError extends Error {
     readonly status: number;
-    constructor(message: string, status: number);
+    readonly method?: string;
+    readonly endpoint?: string;
+    readonly body?: unknown;
+    readonly retryable: boolean;
+    readonly retryAfterMs?: number;
+    constructor(message: string, status: number, details?: RestErrorDetails);
+}
+/** A timeout or transport failure after the configured retries were exhausted. */
+declare class RestNetworkError extends Error {
+    readonly code = "LAVALINK_NETWORK_ERROR";
+    readonly method: string;
+    readonly endpoint: string;
+    readonly timedOut: boolean;
+    readonly cause: unknown;
+    constructor(message: string, details: {
+        method: string;
+        endpoint: string;
+        timedOut: boolean;
+        cause: unknown;
+    });
 }
 
 /**
@@ -624,10 +671,11 @@ declare class Node {
     reconnectAttempts: number;
     private reconnectTimer;
     private lastPing;
+    private destroyed;
     constructor(manager: Moodenglink, options: NodeOptions);
     /** The node identifier. */
     get id(): string;
-    /** WebSocket round-trip latency in ms (from the last `stats` frame). */
+    /** Last observed Discord voice ping in ms across players on this node. */
     get ping(): number;
     /** Total number of players currently bound to this node. */
     get playerCount(): number;
@@ -649,6 +697,20 @@ declare class Node {
     private onClose;
     private onError;
     private reconnect;
+    /** Whether the node advertises a source manager (case-insensitive). */
+    supportsSource(source: string): boolean;
+    /** Whether the node advertises a Lavalink filter (case-insensitive). */
+    supportsFilter(filter: string): boolean;
+    /** Whether the node advertises an installed plugin (case-insensitive). */
+    hasPlugin(plugin: string): boolean;
+    /** Validates advertised `/info` capabilities without mutating the node. */
+    validateCapabilities(requirements?: NodeCapabilityRequirements): NodeCapabilityReport;
+}
+/** A node failed its configured source/filter/plugin requirements. */
+declare class NodeCapabilityError extends Error {
+    readonly nodeId: string;
+    readonly report: NodeCapabilityReport;
+    constructor(nodeId: string, report: NodeCapabilityReport);
 }
 
 /**
@@ -694,6 +756,8 @@ declare class Filters {
     apply(): Promise<this>;
     /** Merges a partial filter payload into the current state and applies it. */
     set(payload: FilterPayload): Promise<this>;
+    /** Hydrates local filter state without issuing a REST request. */
+    load(payload: FilterPayload): this;
     setEqualizer(bands: Band[]): this;
     /** Applies a named equalizer preset (`bass`, `pop`, `rock`, ...). */
     setPreset(preset: EqualizerPreset): this;
@@ -814,6 +878,13 @@ declare class Player {
     private endIntent;
     /** Makes destroy idempotent when voice, queue and user cleanup race. */
     private destroyPromise;
+    /** Serialises persistence writes so an older snapshot cannot win a race. */
+    private saveChain;
+    /** Prevents concurrent unresolved-track consumers from shifting the queue twice. */
+    private playChain;
+    /** Coalesces bursts of recoverable voice-close events into one reconnect. */
+    private voiceReconnectPending;
+    private lastPositionSaveAt;
     constructor(manager: Moodenglink, options: PlayerOptions, node: Node);
     /** The track currently playing, if any. */
     get current(): Track | null;
@@ -829,8 +900,11 @@ declare class Player {
     setTextChannel(channelId: string): this;
     /** Moves this player (and its playback state) to another node. */
     moveNode(node: Node): Promise<this>;
+    /** @internal Recreates this player's voice and playback state on its node. */
+    restoreNodeState(): Promise<void>;
     /** Starts playback. With no options, plays the next queued track. */
     play(options?: PlayOptions): Promise<this>;
+    private performPlay;
     /** @internal Resolves an unresolved queue item, swallowing failures (returns null). */
     private resolveUnresolved;
     /** Stops the current track. Pass `false` to keep the queue intact. */
@@ -924,6 +998,7 @@ interface SessionStore {
     delete(key: string): Promise<unknown> | unknown;
     keys(): Promise<string[]> | string[];
 }
+type StoreOperation = "get" | "set" | "delete" | "keys";
 /** Built-in defaults for common deployment sizes. Omit this to preserve v1 behaviour. */
 type ManagerPreset = "minimal" | "recommended" | "resilient";
 /** Controls which direct URLs may be sent to Lavalink. Search text is unaffected by default. */
@@ -941,7 +1016,7 @@ interface SearchPolicy {
 }
 /** Default lifecycle behaviour for every player. All switches are opt-in except voice cleanup. */
 interface PlayerBehaviorOptions {
-    /** Advance after TrackStuck/TrackException. Defaults to `false`. */
+    /** Advance after TrackStuck. Exceptions advance through their TrackEnd event. */
     autoSkipOnError?: boolean;
     /** Destroy the player when Discord removes the bot from voice. Defaults to `true`. */
     destroyOnVoiceDisconnect?: boolean;
@@ -999,6 +1074,8 @@ interface ManagerOptions {
     trackPartial?: (keyof Track)[];
     /** Optional storage backend enabling session resuming and player persistence. */
     store?: SessionStore;
+    /** Persist live positions at most this often in ms. Defaults to `15000`; `false` disables it. */
+    positionSaveInterval?: number | false;
     /**
      * Enables in-memory caching of search results to cut down on REST calls.
      * Pass `true` for defaults (30s TTL, 100 entries) or fine-tune the values.
@@ -1036,6 +1113,8 @@ interface ManagerEvents {
     nodeDestroy: [node: Node];
     nodeRaw: [payload: unknown];
     nodeStats: [node: Node, stats: NodeStats];
+    nodeCapabilityMismatch: [node: Node, report: NodeCapabilityReport];
+    storeError: [error: Error, operation: StoreOperation, key?: string];
     playerCreate: [player: Player];
     playerDestroy: [player: Player, context: PlayerDestroyContext];
     playerMove: [player: Player, oldNode: Node, newNode: Node];
@@ -1155,7 +1234,8 @@ declare class Moodenglink extends EventEmitter {
     /** @internal Migrates all players off a dead node onto the next best one. */
     handleNodeFailover(deadNode: Node): Promise<void>;
     /** @internal Restores persisted players onto a freshly-connected node. */
-    resumePlayers(node: Node): Promise<void>;
+    resumePlayers(node: Node, replay?: boolean): Promise<void>;
+    private restoreQueueItem;
     /** Registers a plugin instance. */
     use(plugin: Plugin): this;
     /** Unregisters a plugin (by instance or name) and runs its `unload` hook. */
@@ -1224,6 +1304,13 @@ interface RedisLike {
     set(key: string, value: string): Promise<unknown>;
     del(key: string): Promise<unknown>;
     keys(pattern: string): Promise<string[]>;
+    /** node-redis v4 cursor API (preferred over blocking KEYS when available). */
+    scanIterator?(options: {
+        MATCH: string;
+        COUNT: number;
+    }): AsyncIterable<string | string[]>;
+    /** ioredis cursor API (preferred over blocking KEYS when available). */
+    scan?(cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
 }
 /**
  * A Redis-backed store that survives full process restarts. Pass an existing
@@ -1318,13 +1405,6 @@ declare class TTLCache<K, V> {
     get size(): number;
 }
 
-/**
- * Moodenglink — a modern Lavalink v4 client for Node.js.
- *
- * Inspired by Sonatica, Magmastream, Moonlink.js and Erela.js.
- * @packageDocumentation
- */
+var version = "1.6.0";
 
-declare const version = "1.5.0";
-
-export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndEvent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };

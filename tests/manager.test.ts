@@ -260,6 +260,37 @@ describe("Moodenglink players", () => {
 		expect(send).toHaveBeenCalledOnce();
 		expect(update).toHaveBeenCalledWith("g1", expect.objectContaining({ track: { encoded: "E1", userData: {} } }), false);
 	});
+
+	it("does not return or race a player that is still destroying", async () => {
+		const { manager, node } = buildManager();
+		let release!: () => void;
+		vi.spyOn(node.rest, "destroyPlayer").mockReturnValue(new Promise<void>((resolve) => (release = resolve)));
+		const old = manager.create({ guild: "g1", voiceChannel: "vc1" });
+
+		const destroying = old.destroy(false);
+		expect(() => manager.create({ guild: "g1", voiceChannel: "vc2" })).toThrow("being destroyed");
+		release();
+		await destroying;
+		const fresh = manager.create({ guild: "g1", voiceChannel: "vc2" });
+
+		expect(fresh).not.toBe(old);
+		expect(manager.get("g1")).toBe(fresh);
+	});
+
+	it("keeps the destroying guard active during playerDisconnect listeners", async () => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		const attemptedCreate = vi.fn(() => {
+			expect(() => manager.create({ guild: "g1", voiceChannel: "vc2" })).toThrow("being destroyed");
+		});
+		manager.on("playerDisconnect", attemptedCreate);
+
+		await player.destroy();
+
+		expect(attemptedCreate).toHaveBeenCalledOnce();
+		expect(manager.get("g1")).toBeUndefined();
+	});
 });
 
 describe("Moodenglink.handleAutoplay", () => {
@@ -392,7 +423,7 @@ describe("Moodenglink.resumePlayers", () => {
 
 		await manager.resumePlayers(node);
 
-		expect(playSpy).toHaveBeenCalledWith({ track: expect.objectContaining({ encoded: "ENC" }), startTime: 90_000 });
+		expect(playSpy).toHaveBeenCalledWith({ track: expect.objectContaining({ encoded: "ENC" }), startTime: 90_000, paused: false });
 	});
 
 	it("clamps a persisted position past the track duration", async () => {
@@ -415,6 +446,61 @@ describe("Moodenglink.resumePlayers", () => {
 		await manager.resumePlayers(node);
 
 		expect(playSpy).toHaveBeenCalledWith(expect.objectContaining({ startTime: 0 }));
+	});
+
+	it("does not duplicate or replay a player that already exists", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, { current: seedTrack(), queue: [seedTrack({ encoded: "QUEUED" })] });
+		const existing = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		existing.queue.add(seedTrack({ encoded: "LOCAL" }) as never);
+		const playSpy = vi.spyOn(existing, "play");
+		playSpy.mockClear();
+
+		await manager.resumePlayers(node);
+
+		expect(manager.get("g1")).toBe(existing);
+		expect(existing.queue.map((item) => (item as { encoded: string }).encoded)).toEqual(["LOCAL"]);
+		expect(playSpy).not.toHaveBeenCalled();
+	});
+
+	it("restores paused state, filters, data, and unresolved queue items", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, {
+			paused: true,
+			data: { locale: "th" },
+			filters: { volume: 0.8, timescale: { speed: 1.1, pitch: 1, rate: 1 } },
+			current: seedTrack(),
+			queue: [{ unresolved: true, title: "Pending", author: "Artist", sourceName: "youtube" }],
+		});
+		const playSpy = vi.spyOn(Player.prototype, "play").mockResolvedValue(undefined as never);
+
+		await manager.resumePlayers(node);
+
+		const player = manager.get("g1")!;
+		expect(player.data.locale).toBe("th");
+		expect(player.filters.volume).toBe(0.8);
+		expect(player.filters.timescale?.speed).toBe(1.1);
+		expect(player.queue[0]).toMatchObject({ unresolved: true, title: "Pending" });
+		expect(typeof (player.queue[0] as { resolve?: unknown }).resolve).toBe("function");
+		expect(playSpy).toHaveBeenCalledWith(expect.objectContaining({ paused: true }));
+	});
+
+	it("surfaces persistence failures through storeError", async () => {
+		const store = {
+			keys: vi.fn().mockRejectedValue(new Error("redis offline")),
+			get: vi.fn(),
+			set: vi.fn(),
+			delete: vi.fn(),
+		};
+		const { manager, node } = buildManager({ store, autoResume: true });
+		const storeError = vi.fn();
+		manager.on("storeError", storeError);
+
+		await manager.resumePlayers(node);
+
+		expect(storeError).toHaveBeenCalledWith(expect.objectContaining({ message: "redis offline" }), "keys");
 	});
 });
 

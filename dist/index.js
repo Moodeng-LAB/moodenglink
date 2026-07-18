@@ -37,6 +37,7 @@ __export(index_exports, {
   MemoryStore: () => MemoryStore,
   Moodenglink: () => Moodenglink,
   Node: () => Node,
+  NodeCapabilityError: () => NodeCapabilityError,
   OpCodes: () => OpCodes,
   Player: () => Player,
   Plugin: () => Plugin,
@@ -45,6 +46,7 @@ __export(index_exports, {
   RepeatMode: () => RepeatMode,
   Rest: () => Rest,
   RestError: () => RestError,
+  RestNetworkError: () => RestNetworkError,
   SearchPolicyError: () => SearchPolicyError,
   SearchPrefixes: () => SearchPrefixes,
   Structure: () => Structure,
@@ -278,6 +280,9 @@ async function resolveAutoplayCandidates(manager, previous, requester) {
   return [];
 }
 
+// package.json
+var version = "1.6.0";
+
 // src/utils/equalizers.ts
 var bands = (gains) => gains.map((gain, band) => ({ band, gain }));
 var Equalizers = {
@@ -328,10 +333,16 @@ var Filters = class {
   /** Pushes the current filter state to the node. Chainable. */
   async apply() {
     await this.player.node.rest.updatePlayer(this.player.guild, { filters: this.toJSON() });
+    await this.player.save();
     return this;
   }
   /** Merges a partial filter payload into the current state and applies it. */
   async set(payload) {
+    this.load(payload);
+    return this.apply();
+  }
+  /** Hydrates local filter state without issuing a REST request. */
+  load(payload) {
     if (payload.volume !== void 0) this.volume = payload.volume;
     if (payload.equalizer !== void 0) this.equalizer = payload.equalizer;
     if (payload.karaoke !== void 0) this.karaoke = payload.karaoke;
@@ -343,7 +354,7 @@ var Filters = class {
     if (payload.channelMix !== void 0) this.channelMix = payload.channelMix;
     if (payload.lowPass !== void 0) this.lowPass = payload.lowPass;
     if (payload.pluginFilters !== void 0) this.pluginFilters = payload.pluginFilters;
-    return this.apply();
+    return this;
   }
   /* ------------------------------- setters ------------------------------- */
   setEqualizer(bands2) {
@@ -488,7 +499,7 @@ var Rest = class {
       ...options.headers
     };
     const canRetry = options.idempotent ?? method === "GET";
-    const maxAttempts = canRetry ? Math.max(1, this.node.options.retryAmount) : 1;
+    const maxAttempts = canRetry ? Math.max(1, this.node.options.retryAmount + 1) : 1;
     let lastError;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const controller = new AbortController();
@@ -497,22 +508,46 @@ var Rest = class {
         const response = await fetch(url, { method, headers, body, signal: controller.signal });
         if (response.status === 204) return void 0;
         const text = await response.text();
-        const data = text ? JSON.parse(text) : void 0;
+        let data;
+        try {
+          data = text ? JSON.parse(text) : void 0;
+        } catch {
+          data = text;
+        }
         if (!response.ok) {
-          const trace = typeof data?.trace === "string" ? ` \u2014 ${data.trace.split("\n")[0]}` : "";
-          const message = data && (data.message || data.error) || response.statusText;
-          throw new RestError(`Lavalink REST ${response.status} on ${method} ${endpoint}: ${message}${trace}`, response.status);
+          const payload = data && typeof data === "object" ? data : null;
+          const trace = typeof payload?.trace === "string" ? ` \u2014 ${payload.trace.split("\n")[0]}` : "";
+          const detail = payload?.message ?? payload?.error ?? (typeof data === "string" ? data : response.statusText);
+          const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+          const retryAfter = Number(response.headers.get("retry-after"));
+          throw new RestError(`Lavalink REST ${response.status} on ${method} ${endpoint}: ${detail}${trace}`, response.status, {
+            method,
+            endpoint,
+            body: data,
+            retryable,
+            retryAfterMs: Number.isFinite(retryAfter) ? retryAfter * 1e3 : void 0
+          });
         }
         return data;
       } catch (error) {
         lastError = error;
-        if (error instanceof RestError || attempt >= maxAttempts) throw error;
         const abort = error?.name === "AbortError";
+        const retryable = !(error instanceof RestError) || error.retryable;
+        if (!retryable || attempt >= maxAttempts) {
+          if (error instanceof RestError) throw error;
+          throw new RestNetworkError(`Lavalink REST ${method} ${endpoint} ${abort ? "timed out" : "failed"}: ${error?.message ?? error}`, {
+            method,
+            endpoint,
+            timedOut: abort,
+            cause: error
+          });
+        }
         this.node.manager.emit(
           "debug",
           `[Rest ${this.node.id}] ${method} ${endpoint} ${abort ? "timed out" : "failed"} (${error?.message ?? error}); retry ${attempt}/${maxAttempts - 1}.`
         );
-        await sleep(Math.min(this.node.options.retryDelay * attempt, 15e3));
+        const retryAfter = error instanceof RestError ? error.retryAfterMs : void 0;
+        await sleep(retryAfter === void 0 ? Math.min(this.node.options.retryDelay * attempt, 15e3) : Math.max(0, Math.min(retryAfter, 15e3)));
       } finally {
         clearTimeout(timeout);
       }
@@ -527,7 +562,7 @@ var Rest = class {
     return this.request("/decodetrack", { query: { encodedTrack } });
   }
   decodeTracks(encodedTracks) {
-    return this.request("/decodetracks", { method: "POST", body: encodedTracks });
+    return this.request("/decodetracks", { method: "POST", body: encodedTracks, idempotent: true });
   }
   /* ------------------------------- players ------------------------------- */
   get sessionPath() {
@@ -547,12 +582,16 @@ var Rest = class {
       body
     });
   }
-  destroyPlayer(guildId) {
-    return this.request(`${this.sessionPath}/players/${guildId}`, { method: "DELETE" });
+  async destroyPlayer(guildId) {
+    try {
+      await this.request(`${this.sessionPath}/players/${guildId}`, { method: "DELETE", idempotent: true });
+    } catch (error) {
+      if (!(error instanceof RestError) || error.status !== 404) throw error;
+    }
   }
   /* ------------------------------- session ------------------------------- */
   updateSession(resuming, timeout) {
-    return this.request(this.sessionPath, { method: "PATCH", body: { resuming, timeout } });
+    return this.request(this.sessionPath, { method: "PATCH", body: { resuming, timeout }, idempotent: true });
   }
   /* ------------------------------- node info ------------------------------- */
   getInfo() {
@@ -576,12 +615,12 @@ var Rest = class {
   }
   /** Cancels a live lyrics subscription for a guild. */
   unsubscribeLyrics(guildId) {
-    return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE" });
+    return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE", idempotent: true });
   }
   /* ----------------------- SponsorBlock plugin ----------------------- */
   /** Sets the SponsorBlock categories the node should skip for a guild. */
   setSponsorBlockCategories(guildId, categories) {
-    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "PUT", body: categories });
+    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "PUT", body: categories, idempotent: true });
   }
   /** Gets the SponsorBlock categories currently enabled for a guild. */
   getSponsorBlockCategories(guildId) {
@@ -589,14 +628,30 @@ var Rest = class {
   }
   /** Clears all SponsorBlock categories for a guild. */
   clearSponsorBlockCategories(guildId) {
-    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE" });
+    return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE", idempotent: true });
   }
 };
 var RestError = class extends Error {
-  constructor(message, status) {
+  constructor(message, status, details = {}) {
     super(message);
     this.status = status;
     this.name = "RestError";
+    this.method = details.method;
+    this.endpoint = details.endpoint;
+    this.body = details.body;
+    this.retryable = details.retryable ?? false;
+    this.retryAfterMs = details.retryAfterMs;
+  }
+};
+var RestNetworkError = class extends Error {
+  constructor(message, details) {
+    super(message);
+    this.code = "LAVALINK_NETWORK_ERROR";
+    this.name = "RestNetworkError";
+    this.method = details.method;
+    this.endpoint = details.endpoint;
+    this.timedOut = details.timedOut;
+    this.cause = details.cause;
   }
 };
 
@@ -611,7 +666,8 @@ var DEFAULTS = {
   resumeTimeout: 60,
   priority: 0,
   search: true,
-  playback: true
+  playback: true,
+  capabilities: {}
 };
 var Node = class {
   constructor(manager, options) {
@@ -623,6 +679,7 @@ var Node = class {
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
     this.lastPing = 0;
+    this.destroyed = false;
     this.options = {
       ...DEFAULTS,
       identifier: options.identifier ?? `${options.host}:${options.port ?? DEFAULTS.port}`,
@@ -636,7 +693,7 @@ var Node = class {
   get id() {
     return this.options.identifier;
   }
-  /** WebSocket round-trip latency in ms (from the last `stats` frame). */
+  /** Last observed Discord voice ping in ms across players on this node. */
   get ping() {
     return this.lastPing;
   }
@@ -664,7 +721,7 @@ var Node = class {
   }
   /** Opens the WebSocket connection to the node. */
   connect() {
-    if (this.connected || this.socket) return;
+    if (this.destroyed || this.connected || this.socket) return;
     const clientId = this.manager.options.clientId;
     if (!clientId) throw new Error("Cannot connect a node before Moodenglink.init(clientId) is called.");
     const headers = {
@@ -675,14 +732,17 @@ var Node = class {
     };
     if (this.rest.sessionId) headers["Session-Id"] = this.rest.sessionId;
     const protocol = this.options.secure ? "wss" : "ws";
-    this.socket = new import_ws.default(`${protocol}://${this.options.host}:${this.options.port}/v4/websocket`, { headers });
-    this.socket.on("open", () => this.onOpen());
-    this.socket.on("message", (data) => this.onMessage(data));
-    this.socket.on("close", (code, reason) => this.onClose(code, reason.toString()));
-    this.socket.on("error", (error) => this.onError(error));
+    const socket = new import_ws.default(`${protocol}://${this.options.host}:${this.options.port}/v4/websocket`, { headers });
+    this.socket = socket;
+    socket.on("open", () => this.onOpen(socket));
+    socket.on("message", (data) => this.onMessage(socket, data));
+    socket.on("close", (code, reason) => this.onClose(socket, code, reason.toString()));
+    socket.on("error", (error) => this.onError(socket, error));
   }
   /** Closes the connection and stops reconnecting. */
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.socket) {
@@ -694,11 +754,12 @@ var Node = class {
     this.manager.emit("nodeDestroy", this);
     this.manager.nodes.delete(this.id);
   }
-  onOpen() {
-    this.reconnectAttempts = 0;
+  onOpen(socket) {
+    if (this.socket !== socket || this.destroyed) return;
     this.manager.emit("debug", `[Node ${this.id}] WebSocket opened.`);
   }
-  onMessage(raw) {
+  onMessage(socket, raw) {
+    if (this.socket !== socket || this.destroyed) return;
     let payload;
     try {
       payload = JSON.parse(typeof raw === "string" ? raw : raw.toString());
@@ -710,7 +771,7 @@ var Node = class {
     switch (payload.op) {
       case "playerUpdate" /* PLAYER_UPDATE */: {
         const player = this.manager.players.get(payload.guildId);
-        if (player) {
+        if (player?.node === this) {
           this.lastPing = payload.state.ping;
           player.updateState(payload.state);
         }
@@ -728,26 +789,45 @@ var Node = class {
         return;
       }
       case "ready" /* READY */:
-        void this.handleReady(payload);
+        void this.handleReady(socket, payload).catch((error) => this.manager.emit("nodeError", this, error));
         return;
     }
   }
   /** Handles the one-off READY frame's async setup (session resume, info fetch). */
-  async handleReady(payload) {
+  async handleReady(socket, payload) {
+    if (this.socket !== socket || this.destroyed) return;
     this.connected = true;
     this.rest.sessionId = payload.sessionId;
+    await this.rest.updateSession(true, this.options.resumeTimeout).catch((error) => {
+      this.manager.emit("nodeError", this, error);
+      return null;
+    });
+    this.info = await this.rest.getInfo().catch((error) => {
+      this.manager.emit("nodeError", this, error);
+      return null;
+    });
+    if (this.socket !== socket || this.destroyed || socket.readyState !== import_ws.default.OPEN) return;
+    const report = this.validateCapabilities();
+    if (!report.valid) {
+      const error = new NodeCapabilityError(this.id, report);
+      this.manager.emit("nodeCapabilityMismatch", this, report);
+      this.manager.emit("nodeError", this, error);
+      if (this.options.capabilities.strict) {
+        await this.manager.handleNodeFailover(this);
+        this.destroy();
+        return;
+      }
+    }
     this.reconnectAttempts = 0;
-    await this.rest.updateSession(true, this.options.resumeTimeout).catch(() => null);
-    this.info = await this.rest.getInfo().catch(() => null);
     this.manager.emit("nodeConnect", this);
     this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
-    if (this.manager.options.autoResume && !payload.resumed) {
-      await this.manager.resumePlayers(this).catch(() => null);
+    if (this.manager.options.autoResume && (!payload.resumed || ![...this.manager.players.values()].some((player) => player.node === this))) {
+      await this.manager.resumePlayers(this, !payload.resumed).catch(() => null);
     }
   }
   handleEvent(payload) {
     const player = this.manager.players.get(payload.guildId);
-    if (!player) return;
+    if (!player || player.node !== this) return;
     switch (payload.type) {
       case "TrackStartEvent" /* TrackStartEvent */:
         player.handleTrackStart(payload);
@@ -787,30 +867,77 @@ var Node = class {
         break;
     }
   }
-  onClose(code, reason) {
+  onClose(socket, code, reason) {
+    if (this.socket !== socket || this.destroyed) return;
     this.connected = false;
     this.socket = null;
     this.manager.emit("nodeDisconnect", this, { code, reason });
     this.manager.emit("debug", `[Node ${this.id}] Closed (code=${code}, reason=${reason || "none"}).`);
-    if (code !== 1e3) this.reconnect();
+    this.reconnect();
   }
-  onError(error) {
+  onError(socket, error) {
+    if (this.socket !== socket || this.destroyed) return;
     this.manager.emit("nodeError", this, error);
   }
   reconnect() {
+    if (this.destroyed || this.reconnectTimer) return;
     if (this.reconnectAttempts >= this.options.retryAmount) {
       this.manager.emit("nodeError", this, new Error(`Ran out of reconnect attempts (${this.options.retryAmount}).`));
-      if (this.manager.options.autoMove) void this.manager.handleNodeFailover(this);
-      this.destroy();
+      void this.manager.handleNodeFailover(this).finally(() => this.destroy());
       return;
     }
     const delay = Math.min(this.options.retryDelay * (this.reconnectAttempts + 1), 6e4);
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.destroyed) return;
       this.reconnectAttempts++;
       this.manager.emit("nodeReconnect", this);
       this.manager.emit("debug", `[Node ${this.id}] Reconnecting (attempt ${this.reconnectAttempts}/${this.options.retryAmount}).`);
       this.connect();
     }, delay);
+  }
+  /** Whether the node advertises a source manager (case-insensitive). */
+  supportsSource(source) {
+    return Array.isArray(this.info?.sourceManagers) ? this.info.sourceManagers.some((value) => typeof value === "string" && value.toLowerCase() === source.toLowerCase()) : false;
+  }
+  /** Whether the node advertises a Lavalink filter (case-insensitive). */
+  supportsFilter(filter) {
+    return Array.isArray(this.info?.filters) ? this.info.filters.some((value) => typeof value === "string" && value.toLowerCase() === filter.toLowerCase()) : false;
+  }
+  /** Whether the node advertises an installed plugin (case-insensitive). */
+  hasPlugin(plugin) {
+    return Array.isArray(this.info?.plugins) ? this.info.plugins.some((value) => typeof value?.name === "string" && value.name.toLowerCase() === plugin.toLowerCase()) : false;
+  }
+  /** Validates advertised `/info` capabilities without mutating the node. */
+  validateCapabilities(requirements = this.options.capabilities) {
+    const sources = requirements.sources ?? [];
+    const filters = requirements.filters ?? [];
+    const plugins = requirements.plugins ?? [];
+    const missingSources = sources.filter((value) => !this.supportsSource(value));
+    const missingFilters = filters.filter((value) => !this.supportsFilter(value));
+    const missingPlugins = plugins.filter((value) => !this.hasPlugin(value));
+    return {
+      available: this.info !== null,
+      valid: (this.info !== null || sources.length + filters.length + plugins.length === 0) && missingSources.length === 0 && missingFilters.length === 0 && missingPlugins.length === 0,
+      missingSources,
+      missingFilters,
+      missingPlugins
+    };
+  }
+};
+var NodeCapabilityError = class extends Error {
+  constructor(nodeId, report) {
+    super(
+      `Node "${nodeId}" is missing required capabilities: ` + [
+        report.missingSources.length ? `sources=${report.missingSources.join(",")}` : "",
+        report.missingFilters.length ? `filters=${report.missingFilters.join(",")}` : "",
+        report.missingPlugins.length ? `plugins=${report.missingPlugins.join(",")}` : "",
+        !report.available ? "node info unavailable" : ""
+      ].filter(Boolean).join("; ")
+    );
+    this.nodeId = nodeId;
+    this.report = report;
+    this.name = "NodeCapabilityError";
   }
 };
 
@@ -851,6 +978,13 @@ var Player = class _Player {
     this.endIntent = null;
     /** Makes destroy idempotent when voice, queue and user cleanup race. */
     this.destroyPromise = null;
+    /** Serialises persistence writes so an older snapshot cannot win a race. */
+    this.saveChain = Promise.resolve();
+    /** Prevents concurrent unresolved-track consumers from shifting the queue twice. */
+    this.playChain = Promise.resolve();
+    /** Coalesces bursts of recoverable voice-close events into one reconnect. */
+    this.voiceReconnectPending = false;
+    this.lastPositionSaveAt = 0;
     this.manager = manager;
     this.node = node;
     this.guild = options.guild;
@@ -886,39 +1020,54 @@ var Player = class _Player {
   /* ------------------------------ connection ------------------------------ */
   /** Joins the configured voice channel via the Discord gateway. */
   connect() {
+    if (this.state === "DESTROYING") throw new Error(`Player "${this.guild}" is being destroyed.`);
     if (!this.voiceChannel) throw new Error(`Player "${this.guild}" has no voice channel set.`);
+    const previousState = this.state;
     this.state = "CONNECTING";
-    this.manager.options.send(this.guild, {
-      op: 4,
-      d: {
-        guild_id: this.guild,
-        channel_id: this.voiceChannel,
-        self_mute: this.selfMute,
-        self_deaf: this.selfDeafen
-      }
-    });
+    try {
+      this.manager.options.send(this.guild, {
+        op: 4,
+        d: {
+          guild_id: this.guild,
+          channel_id: this.voiceChannel,
+          self_mute: this.selfMute,
+          self_deaf: this.selfDeafen
+        }
+      });
+    } catch (error) {
+      this.state = previousState;
+      throw error;
+    }
     return this;
   }
   /** Leaves the voice channel but keeps the player and queue alive. */
   disconnect() {
     const previous = this.voiceChannel;
-    this.state = "DISCONNECTING";
-    this.manager.options.send(this.guild, {
-      op: 4,
-      d: { guild_id: this.guild, channel_id: null, self_mute: false, self_deaf: false }
-    });
+    const previousState = this.state;
+    const destroying = previousState === "DESTROYING";
+    if (!destroying) this.state = "DISCONNECTING";
+    try {
+      this.manager.options.send(this.guild, {
+        op: 4,
+        d: { guild_id: this.guild, channel_id: null, self_mute: false, self_deaf: false }
+      });
+    } catch (error) {
+      this.state = previousState;
+      throw error;
+    }
     this.voiceChannel = null;
     this.connected = false;
-    this.state = "DISCONNECTED";
+    if (!destroying) this.state = "DISCONNECTED";
     this.manager.emit("playerDisconnect", this, previous);
     return this;
   }
   /** @internal Applies a Discord-side disconnect without sending another OP 4. */
   handleVoiceDisconnect() {
     const previous = this.voiceChannel;
+    const destroying = this.state === "DESTROYING";
     this.voiceChannel = null;
     this.connected = false;
-    this.state = "DISCONNECTED";
+    if (!destroying) this.state = "DISCONNECTED";
     this.manager.emit("playerDisconnect", this, previous);
   }
   /** Moves the player to another voice channel. */
@@ -939,42 +1088,76 @@ var Player = class _Player {
     this.state = "MOVING";
     await oldNode.rest.destroyPlayer(this.guild).catch(() => null);
     this.node = node;
-    await this.sendVoiceUpdate();
-    if (this.current) {
-      await this.node.rest.updatePlayer(this.guild, {
-        track: { encoded: this.current.encoded },
-        position: this.position,
-        volume: this.volume,
-        paused: this.paused,
-        filters: this.filters.toJSON()
-      });
-    }
+    await this.restoreNodeState();
     this.state = "CONNECTED";
     this.manager.emit("playerMove", this, oldNode, node);
+    await this.save();
     return this;
+  }
+  /** @internal Recreates this player's voice and playback state on its node. */
+  async restoreNodeState() {
+    await this.sendVoiceUpdate();
+    if (!this.current) return;
+    await this.node.rest.updatePlayer(this.guild, {
+      track: { encoded: this.current.encoded },
+      position: this.position,
+      volume: this.volume,
+      paused: this.paused,
+      filters: this.filters.toJSON()
+    });
   }
   /* ------------------------------- playback ------------------------------- */
   /** Starts playback. With no options, plays the next queued track. */
-  async play(options = {}) {
+  play(options = {}) {
+    const operation = this.playChain.then(
+      () => this.performPlay(options),
+      () => this.performPlay(options)
+    );
+    this.playChain = operation.then(
+      () => void 0,
+      () => void 0
+    );
+    return operation;
+  }
+  async performPlay(options) {
+    if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) {
+      throw new Error(`Player "${this.guild}" is being destroyed.`);
+    }
     let track = null;
+    let dequeued = null;
+    const previous = this.queue.current;
     if (options.track) {
       track = isUnresolvedTrack(options.track) ? await this.resolveUnresolved(options.track) : options.track;
     } else {
       while (this.queue.length && !track) {
         const item = this.queue.shift();
         track = isUnresolvedTrack(item) ? await this.resolveUnresolved(item) : item;
+        if (track) dequeued = item;
       }
     }
     if (!track) throw new Error("Queue is empty \u2014 nothing to play.");
-    this.queue.current = track;
     const body = {
       track: { encoded: track.encoded, userData: track.userData ?? {} },
-      volume: this.volume
+      volume: this.volume,
+      filters: this.filters.toJSON()
     };
     if (options.startTime !== void 0) body.position = options.startTime;
     if (options.endTime !== void 0) body.endTime = options.endTime;
     if (options.paused !== void 0) body.paused = options.paused;
-    await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
+    let response;
+    try {
+      response = await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
+    } catch (error) {
+      if (dequeued) this.queue.unshift(dequeued);
+      this.queue.current = previous;
+      throw error;
+    }
+    if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) return this;
+    if (options.noReplace && response?.track?.encoded && response.track.encoded !== track.encoded) {
+      if (dequeued) this.queue.unshift(dequeued);
+      return this;
+    }
+    this.queue.current = track;
     this.playing = true;
     this.paused = options.paused ?? false;
     this.position = options.startTime ?? 0;
@@ -992,18 +1175,32 @@ var Player = class _Player {
   }
   /** Stops the current track. Pass `false` to keep the queue intact. */
   async stop(clearQueue = true) {
+    const cleared = clearQueue ? [...this.queue] : [];
     if (clearQueue) this.queue.clear();
-    this.endIntent = "stop";
-    await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+    this.endIntent = { type: "stop", encoded: this.current?.encoded ?? null };
+    try {
+      await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+    } catch (error) {
+      this.endIntent = null;
+      if (cleared.length) this.queue.unshift(...cleared);
+      throw error;
+    }
     this.playing = false;
     this.queue.current = null;
+    await this.save();
     return this;
   }
   /** Skips `amount` tracks (default 1) by ending the current track early. */
   async skip(amount = 1) {
-    if (amount > 1) this.queue.splice(0, amount - 1);
-    this.endIntent = "skip";
-    await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+    const removed = amount > 1 ? this.queue.splice(0, amount - 1) : [];
+    this.endIntent = { type: "skip", encoded: this.current?.encoded ?? null };
+    try {
+      await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+    } catch (error) {
+      this.endIntent = null;
+      if (removed.length) this.queue.unshift(...removed);
+      throw error;
+    }
     return this;
   }
   /** Skips backwards to the previously played track. */
@@ -1017,7 +1214,8 @@ var Player = class _Player {
     if (state) this.position = this.position;
     await this.node.rest.updatePlayer(this.guild, { paused: state });
     this.paused = state;
-    this.playing = !state;
+    this.playing = !state && this.current !== null;
+    await this.save();
     return this;
   }
   resume() {
@@ -1030,24 +1228,28 @@ var Player = class _Player {
     const target = clamp(position, 0, this.current.duration);
     await this.node.rest.updatePlayer(this.guild, { position: target });
     this.position = target;
+    await this.save();
     return this;
   }
   /** Sets the volume (0-1000). */
   async setVolume(volume) {
-    this.volume = clamp(volume, 0, 1e3);
-    await this.node.rest.updatePlayer(this.guild, { volume: this.volume });
-    this.filters.volume = this.volume / 100;
+    const next = clamp(volume, 0, 1e3);
+    await this.node.rest.updatePlayer(this.guild, { volume: next });
+    this.volume = next;
+    this.filters.volume = next / 100;
     await this.save();
     return this;
   }
   /** Sets the repeat mode (`NONE`, `TRACK`, `QUEUE`). */
   setRepeatMode(mode) {
     this.repeatMode = mode;
+    void this.save();
     return this;
   }
   /** Toggles autoplay of related tracks when the queue empties. */
   setAutoplay(state) {
     this.autoplay = state;
+    void this.save();
     return this;
   }
   /**
@@ -1060,13 +1262,26 @@ var Player = class _Player {
     const disconnect = normalized.disconnect ?? true;
     const reason = normalized.reason ?? "manual";
     this.destroyPromise = (async () => {
-      if (disconnect) this.disconnect();
       this.state = "DESTROYING";
+      if (disconnect) {
+        try {
+          this.disconnect();
+        } catch (error) {
+          this.manager.emit("debug", `[Player ${this.guild}] Voice disconnect send failed during destroy: ${error.message}`);
+          this.handleVoiceDisconnect();
+        }
+      }
+      this.state = "DESTROYING";
+      await this.playChain;
       await this.node.rest.destroyPlayer(this.guild).catch(() => null);
       if (this.manager.options.store) {
-        await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
+        await this.saveChain;
+        const key = `moodenglink:player:${this.guild}`;
+        await Promise.resolve(this.manager.options.store.delete(key)).catch((error) => {
+          this.manager.emit("storeError", error, "delete", key);
+        });
       }
-      this.manager.players.delete(this.guild);
+      if (this.manager.players.get(this.guild) === this) this.manager.players.delete(this.guild);
       this.manager.emit("playerDestroy", this, { reason, disconnected: disconnect });
     })();
     return this.destroyPromise;
@@ -1075,6 +1290,7 @@ var Player = class _Player {
   /** Stores an arbitrary value on the player. Chainable. */
   set(key, value) {
     this.data[key] = value;
+    void this.save();
     return this;
   }
   /** Reads a previously-stored value from the player. */
@@ -1140,12 +1356,15 @@ var Player = class _Player {
       if (this.state === "RESUMING" || this.state === "CONNECTING") this.state = "CONNECTED";
     }
     this.manager.emit("playerStateUpdate", this);
+    const interval = this.manager.options.positionSaveInterval ?? 15e3;
+    if (this.manager.options.store && interval !== false && Date.now() - this.lastPositionSaveAt >= Math.max(0, interval)) {
+      this.lastPositionSaveAt = Date.now();
+      void this.save();
+    }
   }
   /** @internal */
   handleTrackStart(payload) {
-    this.playing = true;
-    this.paused = false;
-    this.endIntent = null;
+    this.playing = !this.paused;
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackStart", this, track, payload);
   }
@@ -1153,9 +1372,13 @@ var Player = class _Player {
   async handleTrackEnd(payload) {
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackEnd", this, track, payload);
-    const intent = this.endIntent;
-    this.endIntent = null;
+    const pending = this.endIntent;
+    const matchesIntent = pending !== null && pending.encoded !== null && pending.encoded === payload.track.encoded;
+    const intent = matchesIntent ? pending.type : null;
+    if (matchesIntent) this.endIntent = null;
     if (payload.reason === "replaced" || payload.reason === "cleanup") return;
+    if (this.current && this.current.encoded !== payload.track.encoded) return;
+    if (payload.reason === "stopped" && intent === null) return;
     if (intent === "stop") {
       this.recordPrevious(track);
       this.playing = false;
@@ -1180,6 +1403,7 @@ var Player = class _Player {
     if (this.queue.previous.length > 50) this.queue.previous.length = 50;
   }
   async advance(previous, payload, naturalEnd) {
+    if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) return;
     this.recordPrevious(previous);
     if (this.queue.length > 0) {
       await this.play().catch((error) => this.manager.emit("nodeError", this.node, error));
@@ -1188,11 +1412,21 @@ var Player = class _Player {
     if (naturalEnd && (this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
       this.autoplaying = true;
       try {
-        const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
+        const queued = await this.manager.handleAutoplay(this, previous).catch((error) => {
+          this.manager.emit("nodeError", this.node, error);
+          return false;
+        });
         if (queued) return;
       } finally {
         this.autoplaying = false;
       }
+    }
+    if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) return;
+    if (this.queue.length > 0) {
+      this.playing = false;
+      this.queue.current = null;
+      await this.save();
+      return;
     }
     this.playing = false;
     this.queue.current = null;
@@ -1212,7 +1446,6 @@ var Player = class _Player {
   handleTrackException(payload) {
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackError", this, track, payload);
-    this.autoSkipPlaybackError();
   }
   autoSkipPlaybackError() {
     if (!this.manager.options.playerBehavior?.autoSkipOnError || !this.playing || this.endIntent) return;
@@ -1229,7 +1462,7 @@ var Player = class _Player {
   /** @internal */
   async handleSocketClosed(payload) {
     this.manager.emit("socketClosed", this, payload);
-    if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel) return;
+    if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel || this.voiceReconnectPending) return;
     if (!_Player.RECOVERABLE_VOICE_CLOSE.has(payload.code)) return;
     const maxTries = this.manager.options.voiceReconnectTries ?? 3;
     if (this.voiceReconnectAttempts >= maxTries) {
@@ -1241,12 +1474,15 @@ var Player = class _Player {
     const delay = (this.manager.options.voiceReconnectDelay ?? 1e3) * this.voiceReconnectAttempts;
     this.state = "RESUMING";
     this.manager.emit("debug", `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries} in ${delay}ms.`);
-    await sleep(delay);
-    if (!this.voiceChannel || this.state === "DESTROYING") return;
+    this.voiceReconnectPending = true;
     try {
+      await sleep(delay);
+      if (!this.voiceChannel || this.state === "DESTROYING") return;
       this.connect();
     } catch (error) {
       this.manager.emit("nodeError", this.node, error);
+    } finally {
+      this.voiceReconnectPending = false;
     }
   }
   /* ---------------------------- persistence ---------------------------- */
@@ -1265,6 +1501,7 @@ var Player = class _Player {
       current: this.current,
       queue: [...this.queue],
       previous: this.queue.previous,
+      filters: this.filters.toJSON(),
       voiceState: this.voiceState,
       data: this.data
     };
@@ -1272,8 +1509,15 @@ var Player = class _Player {
   /** @internal Persists this player to the configured store, if any. */
   async save() {
     const store = this.manager.options.store;
-    if (!store) return;
-    await Promise.resolve(store.set(`moodenglink:player:${this.guild}`, JSON.stringify(this.toJSON()))).catch(() => null);
+    if (!store || this.state === "DESTROYING") return;
+    const key = `moodenglink:player:${this.guild}`;
+    const snapshot = JSON.stringify(this.toJSON());
+    this.saveChain = this.saveChain.then(async () => {
+      await Promise.resolve(store.set(key, snapshot)).catch((error) => {
+        this.manager.emit("storeError", error, "set", key);
+      });
+    });
+    await this.saveChain;
   }
 };
 
@@ -1459,7 +1703,7 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
     const preset = presetDefaults(options.preset);
     this.options = {
       shards: 1,
-      clientName: "Moodenglink",
+      clientName: `Moodenglink/${version}`,
       autoPlay: false,
       autoMove: true,
       autoResume: false,
@@ -1557,7 +1801,12 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
   /** Creates (or returns the existing) player for a guild. */
   create(options) {
     const existing = this.players.get(options.guild);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.state === "DESTROYING") {
+        throw new Error(`Player "${options.guild}" is being destroyed; await destroy() before recreating it.`);
+      }
+      return existing;
+    }
     const defaults = this.options.playerDefaults;
     const merged = {
       ...defaults,
@@ -1706,6 +1955,7 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
    */
   async handleAutoplay(player, previous) {
     if (!previous) return false;
+    const expectedCurrent = player.current;
     const seedRequester = previous.requester;
     const requester = "autoplayRequester" in this.options ? this.options.autoplayRequester : previous.requester;
     const candidates = await resolveAutoplayCandidates(this, previous, seedRequester).catch(() => []);
@@ -1724,6 +1974,9 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
     if (!pool.length) return false;
     const window = Math.max(1, Math.min(this.options.autoplaySampleSize ?? 5, pool.length));
     const next = { ...pool[Math.floor(Math.random() * window)], requester };
+    if (this.players.get(player.guild) !== player || player.state === "DESTROYING" || player.current !== expectedCurrent || player.queue.length > 0) {
+      return false;
+    }
     player.queue.add(next);
     await player.play();
     return true;
@@ -1761,48 +2014,102 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
   /* ----------------------------- resilience ----------------------------- */
   /** @internal Migrates all players off a dead node onto the next best one. */
   async handleNodeFailover(deadNode) {
-    const target = this.nodes.filter((n) => n !== deadNode && n.connected && n.options.playback).first();
-    if (!target) return;
-    const affected = this.players.filter((p) => p.node === deadNode);
+    const target = this.options.autoMove ? this.selectNode((n) => n !== deadNode && n.options.playback) : void 0;
+    const affected = [...this.players.values()].filter((player) => player.node === deadNode);
     for (const player of affected.values()) {
-      await player.moveNode(target).catch((error) => this.emit("nodeError", target, error));
+      if (!target) {
+        await player.destroy({ disconnect: true, reason: "node-unavailable" });
+        continue;
+      }
+      await player.moveNode(target).catch(async (error) => {
+        this.emit("nodeError", target, error);
+        await player.destroy({ disconnect: true, reason: "node-unavailable" });
+      });
     }
   }
   /** @internal Restores persisted players onto a freshly-connected node. */
-  async resumePlayers(node) {
+  async resumePlayers(node, replay = true) {
     const store = this.options.store;
     if (!store) return;
-    const keys = await Promise.resolve(store.keys());
+    let keys;
+    try {
+      keys = await Promise.resolve(store.keys());
+    } catch (error) {
+      this.emit("storeError", error, "keys");
+      return;
+    }
     for (const key of keys) {
       if (!key.startsWith("moodenglink:player:")) continue;
-      const raw = await Promise.resolve(store.get(key));
+      let raw;
+      try {
+        raw = await Promise.resolve(store.get(key));
+      } catch (error) {
+        this.emit("storeError", error, "get", key);
+        continue;
+      }
       if (!raw) continue;
       try {
         const data = JSON.parse(raw);
-        if (data.node !== node.id) continue;
+        if (data.node !== node.id || typeof data.guild !== "string" || !data.guild) continue;
+        if (typeof data.voiceChannel !== "string") continue;
+        const existing = this.players.get(data.guild);
+        if (existing) {
+          if (replay && existing.node === node) await existing.restoreNodeState();
+          continue;
+        }
         const player = this.create({
           guild: data.guild,
-          voiceChannel: data.voiceChannel ?? void 0,
-          textChannel: data.textChannel ?? void 0,
+          voiceChannel: typeof data.voiceChannel === "string" ? data.voiceChannel : void 0,
+          textChannel: typeof data.textChannel === "string" ? data.textChannel : void 0,
           node: node.id,
-          volume: data.volume
+          volume: typeof data.volume === "number" && Number.isFinite(data.volume) ? data.volume : void 0,
+          data: typeof data.data === "object" && data.data !== null ? data.data : void 0
         });
-        player.repeatMode = data.repeatMode;
-        player.autoplay = data.autoplay;
-        if (Array.isArray(data.queue)) player.queue.add(data.queue);
-        if (data.current) player.queue.current = data.current;
-        if (Array.isArray(data.previous)) player.queue.previous = data.previous;
+        if (data.repeatMode === 0 || data.repeatMode === 1 || data.repeatMode === 2) {
+          player.repeatMode = data.repeatMode;
+        }
+        player.autoplay = data.autoplay === true;
+        if (data.filters && typeof data.filters === "object") player.filters.load(data.filters);
+        if (Array.isArray(data.queue)) {
+          const restored = data.queue.map((item) => this.restoreQueueItem(item)).filter((item) => item !== null);
+          player.queue.add(restored);
+        }
+        const current = this.restoreQueueItem(data.current);
+        if (current && "encoded" in current) player.queue.current = current;
+        if (Array.isArray(data.previous)) {
+          player.queue.previous = data.previous.map((item) => this.restoreQueueItem(item)).filter((item) => item !== null && "encoded" in item);
+        }
+        if (!replay) {
+          player.paused = data.paused === true;
+          player.playing = player.queue.current !== null && !player.paused;
+        }
         player.connect();
-        if (player.queue.current) {
-          const current = player.queue.current;
+        if (replay && player.queue.current) {
+          const current2 = player.queue.current;
           const saved = typeof data.position === "number" ? data.position : 0;
-          const startTime = current.isStream ? 0 : Math.max(0, Math.min(saved, current.duration || saved));
-          await player.play({ track: current, startTime });
+          const startTime = current2.isStream ? 0 : Math.max(0, Math.min(saved, current2.duration || saved));
+          await player.play({ track: current2, startTime, paused: data.paused === true });
         }
         this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
-      } catch {
+      } catch (error) {
+        this.emit("debug", `[Moodenglink] Ignored malformed persisted player "${key}": ${error.message}`);
       }
     }
+  }
+  restoreQueueItem(value) {
+    if (!value || typeof value !== "object") return null;
+    const item = value;
+    if (item.unresolved === true && typeof item.title === "string") {
+      return this.buildUnresolved({
+        title: item.title,
+        author: typeof item.author === "string" ? item.author : void 0,
+        duration: typeof item.duration === "number" ? item.duration : void 0,
+        uri: typeof item.uri === "string" ? item.uri : void 0,
+        source: typeof item.sourceName === "string" ? item.sourceName : void 0,
+        requester: item.requester
+      });
+    }
+    return typeof item.encoded === "string" ? value : null;
   }
   /* ------------------------------ plugins ------------------------------ */
   /** Registers a plugin instance. */
@@ -1911,7 +2218,23 @@ var RedisStore = class {
     return this.redis.del(this.prefix + key);
   }
   async keys() {
-    const keys = await this.redis.keys(`${this.prefix}moodenglink:player:*`);
+    const pattern = `${this.prefix}moodenglink:player:*`;
+    const keys = [];
+    if (this.redis.scanIterator) {
+      for await (const batch of this.redis.scanIterator({ MATCH: pattern, COUNT: 100 })) {
+        if (Array.isArray(batch)) keys.push(...batch);
+        else keys.push(batch);
+      }
+    } else if (this.redis.scan) {
+      let cursor = "0";
+      do {
+        const [next, batch] = await this.redis.scan(cursor, "MATCH", pattern, "COUNT", 100);
+        cursor = next;
+        keys.push(...batch);
+      } while (cursor !== "0");
+    } else {
+      keys.push(...await this.redis.keys(pattern));
+    }
     return this.prefix ? keys.map((k) => k.slice(this.prefix.length)) : keys;
   }
 };
@@ -1930,9 +2253,6 @@ function leastUsedNode(nodes) {
     return aPlayers - bPlayers;
   });
 }
-
-// src/index.ts
-var version = "1.5.0";
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   Equalizers,
@@ -1942,6 +2262,7 @@ var version = "1.5.0";
   MemoryStore,
   Moodenglink,
   Node,
+  NodeCapabilityError,
   OpCodes,
   Player,
   Plugin,
@@ -1950,6 +2271,7 @@ var version = "1.5.0";
   RepeatMode,
   Rest,
   RestError,
+  RestNetworkError,
   SearchPolicyError,
   SearchPrefixes,
   Structure,

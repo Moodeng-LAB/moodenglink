@@ -49,4 +49,28 @@ describe("RedisStore", () => {
 		await store.set("moodenglink:player:1", "x");
 		expect(await store.keys()).toEqual(["moodenglink:player:1"]);
 	});
+
+	it("uses non-blocking scanIterator when the client provides it", async () => {
+		const redis = fakeRedis();
+		redis.keys = async () => {
+			throw new Error("blocking KEYS must not run");
+		};
+		redis.scanIterator = async function* () {
+			yield ["bot:moodenglink:player:1", "bot:moodenglink:player:2"];
+		};
+		const store = new RedisStore(redis, "bot:");
+
+		expect(await store.keys()).toEqual(["moodenglink:player:1", "moodenglink:player:2"]);
+	});
+
+	it("paginates through the ioredis SCAN API", async () => {
+		const redis = fakeRedis();
+		redis.keys = async () => {
+			throw new Error("blocking KEYS must not run");
+		};
+		redis.scan = async (cursor) => (cursor === "0" ? ["7", ["moodenglink:player:1"]] : ["0", ["moodenglink:player:2"]]);
+		const store = new RedisStore(redis);
+
+		expect(await store.keys()).toEqual(["moodenglink:player:1", "moodenglink:player:2"]);
+	});
 });

@@ -4,7 +4,7 @@ import type { Player } from "../src/classes/Player";
 
 function fakePlayer() {
 	const updatePlayer = vi.fn().mockResolvedValue(undefined);
-	const player = { guild: "g1", node: { rest: { updatePlayer } } } as unknown as Player;
+	const player = { guild: "g1", node: { rest: { updatePlayer } }, save: vi.fn().mockResolvedValue(undefined) } as unknown as Player;
 	return { player, updatePlayer };
 }
 
