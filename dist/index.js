@@ -45,6 +45,7 @@ __export(index_exports, {
   RepeatMode: () => RepeatMode,
   Rest: () => Rest,
   RestError: () => RestError,
+  SearchPolicyError: () => SearchPolicyError,
   SearchPrefixes: () => SearchPrefixes,
   Structure: () => Structure,
   TTLCache: () => TTLCache,
@@ -848,6 +849,8 @@ var Player = class _Player {
      * autoplay), a skip advances to the next track. Cleared as soon as it's read.
      */
     this.endIntent = null;
+    /** Makes destroy idempotent when voice, queue and user cleanup race. */
+    this.destroyPromise = null;
     this.manager = manager;
     this.node = node;
     this.guild = options.guild;
@@ -909,6 +912,14 @@ var Player = class _Player {
     this.state = "DISCONNECTED";
     this.manager.emit("playerDisconnect", this, previous);
     return this;
+  }
+  /** @internal Applies a Discord-side disconnect without sending another OP 4. */
+  handleVoiceDisconnect() {
+    const previous = this.voiceChannel;
+    this.voiceChannel = null;
+    this.connected = false;
+    this.state = "DISCONNECTED";
+    this.manager.emit("playerDisconnect", this, previous);
   }
   /** Moves the player to another voice channel. */
   setVoiceChannel(channelId) {
@@ -1039,16 +1050,26 @@ var Player = class _Player {
     this.autoplay = state;
     return this;
   }
-  /** Destroys the player: leaves voice, tears down the node player, forgets it. */
-  async destroy(disconnect = true) {
-    this.state = "DESTROYING";
-    if (disconnect) this.disconnect();
-    await this.node.rest.destroyPlayer(this.guild).catch(() => null);
-    if (this.manager.options.store) {
-      await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
-    }
-    this.manager.players.delete(this.guild);
-    this.manager.emit("playerDestroy", this);
+  /**
+   * Destroys the player and emits a machine-readable reason.
+   * A boolean argument remains supported for backwards compatibility.
+   */
+  destroy(options = {}) {
+    if (this.destroyPromise) return this.destroyPromise;
+    const normalized = typeof options === "boolean" ? { disconnect: options } : options;
+    const disconnect = normalized.disconnect ?? true;
+    const reason = normalized.reason ?? "manual";
+    this.destroyPromise = (async () => {
+      if (disconnect) this.disconnect();
+      this.state = "DESTROYING";
+      await this.node.rest.destroyPlayer(this.guild).catch(() => null);
+      if (this.manager.options.store) {
+        await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
+      }
+      this.manager.players.delete(this.guild);
+      this.manager.emit("playerDestroy", this, { reason, disconnected: disconnect });
+    })();
+    return this.destroyPromise;
   }
   /* ------------------------------ user data ------------------------------ */
   /** Stores an arbitrary value on the player. Chainable. */
@@ -1177,16 +1198,25 @@ var Player = class _Player {
     this.queue.current = null;
     await this.save();
     this.manager.emit("queueEnd", this, previous, payload);
+    if (this.manager.options.playerBehavior?.destroyOnQueueEnd) {
+      await this.destroy({ reason: "queue-end" });
+    }
   }
   /** @internal */
   handleTrackStuck(payload) {
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackStuck", this, track, payload);
+    this.autoSkipPlaybackError();
   }
   /** @internal */
   handleTrackException(payload) {
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackError", this, track, payload);
+    this.autoSkipPlaybackError();
+  }
+  autoSkipPlaybackError() {
+    if (!this.manager.options.playerBehavior?.autoSkipOnError || !this.playing || this.endIntent) return;
+    void this.skip().catch((error) => this.manager.emit("nodeError", this.node, error));
   }
   static {
     /**
@@ -1248,6 +1278,28 @@ var Player = class _Player {
 };
 
 // src/classes/Queue.ts
+function matchText(value, expected) {
+  const actual = value ?? "";
+  if (typeof expected === "string") return actual.toLocaleLowerCase().includes(expected.toLocaleLowerCase());
+  expected.lastIndex = 0;
+  return expected.test(actual);
+}
+function matches(item, matcher, index) {
+  if (typeof matcher === "function") return matcher(item, index);
+  if (typeof matcher === "string") {
+    return [item.title, item.author, item.uri, item.sourceName].some((value) => matchText(value, matcher));
+  }
+  const query = matcher;
+  if (query.title !== void 0 && !matchText(item.title, query.title)) return false;
+  if (query.author !== void 0 && !matchText(item.author, query.author)) return false;
+  if (query.uri !== void 0 && !matchText(item.uri, query.uri)) return false;
+  if (query.sourceName !== void 0 && !matchText(item.sourceName, query.sourceName)) return false;
+  if ("requester" in query && item.requester !== query.requester) return false;
+  const duration = item.duration ?? 0;
+  if (query.minDuration !== void 0 && duration < query.minDuration) return false;
+  if (query.maxDuration !== void 0 && duration > query.maxDuration) return false;
+  return query.predicate?.(item, index) ?? true;
+}
 var Queue = class extends Array {
   constructor() {
     super(...arguments);
@@ -1314,6 +1366,25 @@ var Queue = class extends Array {
       }
     }
   }
+  /** Returns every upcoming item matching fuzzy text, fields, a RegExp, or a predicate. */
+  findTracks(matcher) {
+    return this.filter((item, index) => matches(item, matcher, index));
+  }
+  /** Returns the first upcoming matching item without changing the queue. */
+  findTrack(matcher) {
+    for (let index = 0; index < this.length; index++) {
+      if (matches(this[index], matcher, index)) return this[index];
+    }
+    return void 0;
+  }
+  /** Removes and returns every upcoming matching item, preserving their queue order. */
+  removeTracks(matcher) {
+    const removed = [];
+    for (let index = this.length - 1; index >= 0; index--) {
+      if (matches(this[index], matcher, index)) removed.unshift(...this.splice(index, 1));
+    }
+    return removed;
+  }
 };
 
 // src/classes/Structure.ts
@@ -1342,7 +1413,41 @@ var Structure = class _Structure {
 };
 
 // src/classes/Moodenglink.ts
-var Moodenglink = class extends import_node_events.EventEmitter {
+var SearchPolicyError = class extends Error {
+  constructor(message, query) {
+    super(message);
+    this.query = query;
+    this.code = "SEARCH_POLICY_REJECTED";
+    this.name = "SearchPolicyError";
+  }
+};
+function presetDefaults(preset) {
+  switch (preset) {
+    case "minimal":
+      return { autoMove: false, voiceReconnectTries: 0 };
+    case "recommended":
+      return {
+        autoMove: true,
+        searchCache: true,
+        playerBehavior: { autoSkipOnError: true, destroyOnVoiceDisconnect: true }
+      };
+    case "resilient":
+      return {
+        autoMove: true,
+        autoResume: true,
+        searchCache: { ttl: 6e4, maxSize: 500 },
+        voiceReconnectTries: 5,
+        playerBehavior: { autoSkipOnError: true, destroyOnVoiceDisconnect: true }
+      };
+    default:
+      return {};
+  }
+}
+function domainMatches(hostname, rule) {
+  const domain = rule.toLocaleLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
   constructor(options) {
     super();
     this.nodes = new import_collection.Collection();
@@ -1351,6 +1456,7 @@ var Moodenglink = class extends import_node_events.EventEmitter {
     this.initialized = false;
     if (!options?.nodes?.length) throw new Error("Moodenglink requires at least one node.");
     if (typeof options.send !== "function") throw new Error("Moodenglink requires a `send` function.");
+    const preset = presetDefaults(options.preset);
     this.options = {
       shards: 1,
       clientName: "Moodenglink",
@@ -1359,10 +1465,15 @@ var Moodenglink = class extends import_node_events.EventEmitter {
       autoResume: false,
       defaultSearchPlatform: "youtube",
       trackPartial: [],
-      ...options
+      ...preset,
+      ...options,
+      playerBehavior: {
+        ...preset.playerBehavior,
+        ...options.playerBehavior
+      }
     };
-    if (options.searchCache) {
-      const cfg = options.searchCache === true ? {} : options.searchCache;
+    if (this.options.searchCache) {
+      const cfg = this.options.searchCache === true ? {} : this.options.searchCache;
       this.searchCache = new TTLCache(cfg.ttl ?? 3e4, cfg.maxSize ?? 100);
     } else {
       this.searchCache = null;
@@ -1372,6 +1483,10 @@ var Moodenglink = class extends import_node_events.EventEmitter {
       this.nodes.set(node.id, node);
       this.emit("nodeCreate", node);
     }
+  }
+  /** Beginner-friendly constructor with safe caching, recovery and auto-skip defaults. */
+  static simple(options) {
+    return new _Moodenglink({ preset: "recommended", ...options });
   }
   /**
    * Registers the bot's client id and connects every node.
@@ -1443,8 +1558,14 @@ var Moodenglink = class extends import_node_events.EventEmitter {
   create(options) {
     const existing = this.players.get(options.guild);
     if (existing) return existing;
-    const node = options.node ? this.nodes.get(options.node) : void 0;
-    const player = new (Structure.get("Player"))(this, options, node?.connected ? node : this.idealNode);
+    const defaults = this.options.playerDefaults;
+    const merged = {
+      ...defaults,
+      ...options,
+      data: { ...defaults?.data, ...options.data }
+    };
+    const node = merged.node ? this.nodes.get(merged.node) : void 0;
+    const player = new (Structure.get("Player"))(this, merged, node?.connected ? node : this.idealNode);
     this.players.set(options.guild, player);
     this.emit("playerCreate", player);
     return player;
@@ -1454,8 +1575,8 @@ var Moodenglink = class extends import_node_events.EventEmitter {
     return this.players.get(guild);
   }
   /** Destroys a guild's player, if any. */
-  async destroy(guild) {
-    await this.players.get(guild)?.destroy();
+  async destroy(guild, options = {}) {
+    await this.players.get(guild)?.destroy({ reason: "manager", ...options });
   }
   /* ------------------------------ searching ------------------------------ */
   /**
@@ -1463,8 +1584,9 @@ var Moodenglink = class extends import_node_events.EventEmitter {
    * Accepts a raw string or a `{ query, source }` object.
    */
   async search(query, requester) {
-    const node = this.searchNode();
     const raw = typeof query === "string" ? query : query.query;
+    this.assertSearchAllowed(raw);
+    const node = this.searchNode();
     const source = (typeof query === "string" ? void 0 : query.source) ?? this.options.defaultSearchPlatform;
     const identifier = buildSearchIdentifier(raw, source);
     const cached = this.searchCache?.get(identifier);
@@ -1485,6 +1607,58 @@ var Moodenglink = class extends import_node_events.EventEmitter {
       });
     }
     return result;
+  }
+  /**
+   * Searches, creates/joins a player, queues results and starts playback.
+   * Intended as a small-bot convenience; every lower-level API remains available.
+   */
+  async play(options) {
+    const { query, requester, addAll, ...playerOptions } = options;
+    const result = await this.search(query, requester);
+    const queued = result.loadType === "playlist" || addAll ? result.tracks : result.tracks.slice(0, 1);
+    if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
+    const player = this.create(playerOptions);
+    if (playerOptions.voiceChannel && player.voiceChannel !== playerOptions.voiceChannel) {
+      player.setVoiceChannel(playerOptions.voiceChannel);
+    } else if (!player.connected && player.state === "DISCONNECTED") {
+      player.connect();
+    }
+    player.queue.add(queued);
+    if (!player.playing && !player.paused) await player.play();
+    return { player, result, queued };
+  }
+  assertSearchAllowed(query) {
+    const policy = this.options.searchPolicy;
+    if (!policy) return;
+    let url = null;
+    try {
+      url = new URL(query);
+    } catch {
+    }
+    if (!url) {
+      if (policy.allowSearchQueries === false) {
+        throw new SearchPolicyError("Text and prefixed searches are disabled by searchPolicy.", query);
+      }
+    } else {
+      const protocol = url.protocol.toLocaleLowerCase();
+      const protocols = (policy.allowedProtocols ?? ["http:", "https:"]).map(
+        (value) => value.endsWith(":") ? value.toLocaleLowerCase() : `${value.toLocaleLowerCase()}:`
+      );
+      if (!protocols.includes(protocol)) {
+        throw new SearchPolicyError(`URL protocol "${url.protocol}" is not allowed.`, query);
+      }
+      const hostname = url.hostname.toLocaleLowerCase();
+      if (policy.blockedDomains?.some((domain) => domainMatches(hostname, domain))) {
+        throw new SearchPolicyError(`Domain "${hostname}" is blocked.`, query);
+      }
+      if (policy.allowedDomains?.length && !policy.allowedDomains.some((domain) => domainMatches(hostname, domain))) {
+        throw new SearchPolicyError(`Domain "${hostname}" is not in the allow list.`, query);
+      }
+    }
+    const decision = policy.validate?.(query, url);
+    if (decision === false || typeof decision === "string") {
+      throw new SearchPolicyError(typeof decision === "string" ? decision : "Query rejected by searchPolicy.validate().", query);
+    }
   }
   resolveLoadResult(res, requester) {
     const result = { loadType: res.loadType, tracks: [], playlist: null, exception: null };
@@ -1574,7 +1748,10 @@ var Moodenglink = class extends import_node_events.EventEmitter {
       const player = this.players.get(state.guild_id);
       if (!player) return;
       if (!state.channel_id) {
-        void player.destroy();
+        player.handleVoiceDisconnect();
+        if (this.options.playerBehavior?.destroyOnVoiceDisconnect !== false) {
+          void player.destroy({ disconnect: false, reason: "voice-disconnect" });
+        }
         return;
       }
       player.voiceChannel = state.channel_id;
@@ -1684,7 +1861,7 @@ var Moodenglink = class extends import_node_events.EventEmitter {
   }
   /** Cleanly tears everything down: destroys every player, node and plugin. */
   async destroyAll() {
-    for (const player of this.players.values()) await player.destroy().catch(() => null);
+    for (const player of this.players.values()) await player.destroy({ reason: "shutdown" }).catch(() => null);
     for (const node of this.nodes.values()) node.destroy();
     for (const plugin of this.plugins.values()) plugin.unload(this);
     this.plugins.clear();
@@ -1755,7 +1932,7 @@ function leastUsedNode(nodes) {
 }
 
 // src/index.ts
-var version = "1.0.0";
+var version = "1.5.0";
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   Equalizers,
@@ -1773,6 +1950,7 @@ var version = "1.0.0";
   RepeatMode,
   Rest,
   RestError,
+  SearchPolicyError,
   SearchPrefixes,
   Structure,
   TTLCache,

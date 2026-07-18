@@ -60,15 +60,15 @@ import { Client, GatewayIntentBits } from "discord.js";
 import { Moodenglink } from "moodenglink";
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+	intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
 const manager = new Moodenglink({
-  nodes: [{ host: "localhost", port: 2333, password: "youshallnotpass", identifier: "main" }],
-  defaultSearchPlatform: "youtube",
-  autoPlay: true,
-  // REQUIRED: forward voice payloads to Discord's gateway
-  send: (guildId, payload) => client.guilds.cache.get(guildId)?.shard.send(payload),
+	nodes: [{ host: "localhost", port: 2333, password: "youshallnotpass", identifier: "main" }],
+	defaultSearchPlatform: "youtube",
+	autoPlay: true,
+	// REQUIRED: forward voice payloads to Discord's gateway
+	send: (guildId, payload) => client.guilds.cache.get(guildId)?.shard.send(payload),
 });
 
 manager.on("nodeConnect", (node) => console.log(`Node ${node.id} connected`));
@@ -86,79 +86,82 @@ await client.login(process.env.TOKEN);
 
 ```ts
 async function play(guildId: string, voiceChannelId: string, textChannelId: string, query: string) {
-  const player = manager.create({
-    guild: guildId,
-    voiceChannel: voiceChannelId,
-    textChannel: textChannelId,
-    selfDeafen: true,
-  });
+	const { player, queued } = await manager.play({
+		guild: guildId,
+		voiceChannel: voiceChannelId,
+		textChannel: textChannelId,
+		query,
+		requester: "requester-id",
+	});
 
-  player.connect();
-
-  const res = await manager.search({ query, source: "youtube" }, "requester-id");
-  if (!res.tracks.length) return "No results.";
-
-  player.queue.add(res.loadType === "playlist" ? res.tracks : res.tracks[0]);
-  if (!player.playing) await player.play();
-
-  return res.playlist ? `Queued ${res.tracks.length} tracks` : `Queued **${res.tracks[0].title}**`;
+	return `Queued ${queued.length}: ${player.current?.title}`;
 }
 ```
+
+For beginner-friendly recovery and caching defaults, construct with
+`Moodenglink.simple({ nodes, send })`. Advanced users can keep using the
+individual `create`, `search`, queue and `play` APIs.
 
 ---
 
 ## ⚙️ Manager options
 
-| Option                  | Type                                   | Default         | Description                                                   |
-| ----------------------- | -------------------------------------- | --------------- | ------------------------------------------------------------ |
-| `nodes`                 | `NodeOptions[]`                        | —               | Lavalink nodes to connect to. **Required.**                  |
-| `send`                  | `(guildId, payload) => void`           | —               | Forwards OP4 voice payloads to Discord. **Required.**        |
-| `clientId`              | `string`                               | —               | Bot user id (or pass it to `init()`).                        |
-| `clientName`            | `string`                               | `"Moodenglink"` | `Client-Name` header sent to the node.                       |
-| `shards`                | `number`                               | `1`             | Total shard count.                                           |
-| `autoPlay`              | `boolean`                              | `false`         | Autoplay related tracks (platform radio/recs) at queue end.  |
-| `autoplaySampleSize`    | `number`                               | `5`             | How many top autoplay candidates to sample for variety.      |
-| `autoplayRequester`     | `unknown`                              | *(inherits)*    | `requester` stamped on autoplayed tracks (e.g. the bot user).|
-| `autoMove`              | `boolean`                              | `true`          | Migrate players to a healthy node when one dies.             |
-| `autoResume`            | `boolean`                              | `false`         | Restore players from `store` on a cold node session.         |
-| `voiceReconnectTries`   | `number`                               | `3`             | Max voice re-join attempts after a recoverable close.        |
-| `voiceReconnectDelay`   | `number`                               | `1000`          | Base backoff (ms) between voice re-join attempts.            |
-| `defaultSearchPlatform` | `SearchPlatform`                       | `"youtube"`     | Default source for prefix-less queries.                      |
-| `trackPartial`          | `(keyof Track)[]`                      | `[]`            | Fields to strip from tracks (never removes `encoded`).       |
-| `store`                 | `SessionStore`                         | —               | Backend for persistence/resume (Redis, Map…).                |
-| `searchCache`           | `boolean \| { ttl?, maxSize? }`        | `false`         | Cache search results (default 30s TTL, 100 entries).         |
-| `sorter`                | `(nodes) => Collection<string, Node>`  | `leastUsedNode` | Node ordering strategy.                                      |
+| Option                  | Type                                        | Default         | Description                                                   |
+| ----------------------- | ------------------------------------------- | --------------- | ------------------------------------------------------------- |
+| `nodes`                 | `NodeOptions[]`                             | —               | Lavalink nodes to connect to. **Required.**                   |
+| `send`                  | `(guildId, payload) => void`                | —               | Forwards OP4 voice payloads to Discord. **Required.**         |
+| `clientId`              | `string`                                    | —               | Bot user id (or pass it to `init()`).                         |
+| `clientName`            | `string`                                    | `"Moodenglink"` | `Client-Name` header sent to the node.                        |
+| `shards`                | `number`                                    | `1`             | Total shard count.                                            |
+| `preset`                | `"minimal" \| "recommended" \| "resilient"` | —               | Additive deployment defaults; omitted preserves v1 behavior.  |
+| `autoPlay`              | `boolean`                                   | `false`         | Autoplay related tracks (platform radio/recs) at queue end.   |
+| `autoplaySampleSize`    | `number`                                    | `5`             | How many top autoplay candidates to sample for variety.       |
+| `autoplayRequester`     | `unknown`                                   | _(inherits)_    | `requester` stamped on autoplayed tracks (e.g. the bot user). |
+| `autoMove`              | `boolean`                                   | `true`          | Migrate players to a healthy node when one dies.              |
+| `autoResume`            | `boolean`                                   | `false`         | Restore players from `store` on a cold node session.          |
+| `voiceReconnectTries`   | `number`                                    | `3`             | Max voice re-join attempts after a recoverable close.         |
+| `voiceReconnectDelay`   | `number`                                    | `1000`          | Base backoff (ms) between voice re-join attempts.             |
+| `defaultSearchPlatform` | `SearchPlatform`                            | `"youtube"`     | Default source for prefix-less queries.                       |
+| `trackPartial`          | `(keyof Track)[]`                           | `[]`            | Fields to strip from tracks (never removes `encoded`).        |
+| `store`                 | `SessionStore`                              | —               | Backend for persistence/resume (Redis, Map…).                 |
+| `searchCache`           | `boolean \| { ttl?, maxSize? }`             | `false`         | Cache search results (default 30s TTL, 100 entries).          |
+| `sorter`                | `(nodes) => Collection<string, Node>`       | `leastUsedNode` | Node ordering strategy.                                       |
+| `playerDefaults`        | `Partial<PlayerOptions>`                    | —               | Defaults merged into every player.                            |
+| `playerBehavior`        | `PlayerBehaviorOptions`                     | —               | Auto-skip/error and voice/queue cleanup policies.             |
+| `searchPolicy`          | `SearchPolicy`                              | —               | URL protocol/domain allow/deny rules and custom validation.   |
 
 ## 🖧 Node options
 
-| Option           | Type      | Default             | Description                                        |
-| ---------------- | --------- | ------------------- | -------------------------------------------------- |
-| `host`           | `string`  | —                   | Node host. **Required.**                           |
-| `port`           | `number`  | `2333`              | Node port.                                         |
-| `password`       | `string`  | `"youshallnotpass"` | Node authorization.                                |
-| `secure`         | `boolean` | `false`             | Use `wss`/`https`.                                 |
-| `identifier`     | `string`  | `host:port`         | Friendly id for logs and lookups.                  |
-| `priority`       | `number`  | `0`                 | Higher biases the sorter toward this node.         |
-| `search`         | `boolean` | `true`              | May be used for searching.                         |
-| `playback`       | `boolean` | `true`              | May be used for playback.                          |
-| `retryAmount`    | `number`  | `5`                 | Reconnect / idempotent-REST retry attempts.        |
-| `retryDelay`     | `number`  | `5000`              | Base reconnect backoff (ms), grows per attempt.    |
-| `requestTimeout` | `number`  | `10000`             | Per-request timeout (ms).                          |
-| `resumeTimeout`  | `number`  | `60`                | Node-side session resume window (s).               |
+| Option           | Type      | Default             | Description                                     |
+| ---------------- | --------- | ------------------- | ----------------------------------------------- |
+| `host`           | `string`  | —                   | Node host. **Required.**                        |
+| `port`           | `number`  | `2333`              | Node port.                                      |
+| `password`       | `string`  | `"youshallnotpass"` | Node authorization.                             |
+| `secure`         | `boolean` | `false`             | Use `wss`/`https`.                              |
+| `identifier`     | `string`  | `host:port`         | Friendly id for logs and lookups.               |
+| `priority`       | `number`  | `0`                 | Higher biases the sorter toward this node.      |
+| `search`         | `boolean` | `true`              | May be used for searching.                      |
+| `playback`       | `boolean` | `true`              | May be used for playback.                       |
+| `retryAmount`    | `number`  | `5`                 | Reconnect / idempotent-REST retry attempts.     |
+| `retryDelay`     | `number`  | `5000`              | Base reconnect backoff (ms), grows per attempt. |
+| `requestTimeout` | `number`  | `10000`             | Per-request timeout (ms).                       |
+| `resumeTimeout`  | `number`  | `60`                | Node-side session resume window (s).            |
 
 ---
 
 ## 🎛️ Player & Queue
 
 ```ts
-player.connect();  player.disconnect();
-await player.play();        // next queued track
-await player.stop();        // stop + clear queue  ·  stop(false) keeps it
-await player.skip();        // skip(n) to jump several
-await player.previous();    // back to the last track
-await player.pause();  await player.resume();
+player.connect();
+player.disconnect();
+await player.play(); // next queued track
+await player.stop(); // stop + clear queue  ·  stop(false) keeps it
+await player.skip(); // skip(n) to jump several
+await player.previous(); // back to the last track
+await player.pause();
+await player.resume();
 await player.seek(60_000);
-await player.setVolume(150);            // 0–1000
+await player.setVolume(150); // 0–1000
 player.setRepeatMode(RepeatMode.QUEUE); // NONE | TRACK | QUEUE
 player.setAutoplay(true);
 await player.moveNode(node);
@@ -167,18 +170,40 @@ player.position; // ✨ live position (ms), interpolated between node updates
 ```
 
 ```ts
-player.queue.add(track);   // or an array
+player.queue.add(track); // or an array
 player.queue.shuffle();
 player.queue.move(from, to);
 player.queue.remove(index);
 player.queue.dedupe();
-player.queue.current;      // now playing
-player.queue.previous;     // history (most-recent first, capped at 50)
-player.queue.duration;     // total upcoming ms
+player.queue.findTracks("lofi"); // fuzzy title/author/URL/source
+player.queue.findTrack({ author: /moodeng/i });
+player.queue.removeTracks({ maxDuration: 60_000 }); // declarative bulk removal
+player.queue.current; // now playing
+player.queue.previous; // history (most-recent first, capped at 50)
+player.queue.duration; // total upcoming ms
 ```
 
 > **Correct by design:** repeat only re-plays a track that finished on its own —
 > a manual `skip()` or `stop()` never loops or triggers autoplay.
+
+Player defaults and lifecycle policy can be centralized:
+
+```ts
+const manager = Moodenglink.simple({
+	nodes,
+	send,
+	playerDefaults: { volume: 80, selfDeafen: true },
+	playerBehavior: {
+		autoSkipOnError: true,
+		destroyOnVoiceDisconnect: true,
+		destroyOnQueueEnd: true,
+	},
+});
+
+manager.on("playerDestroy", (player, context) => {
+	console.log(player.guild, context.reason); // manual | manager | voice-disconnect | ...
+});
+```
 
 ---
 
@@ -192,11 +217,7 @@ await player.filters.eightD();
 await player.filters.vaporwave();
 
 // Manual, chainable — call apply() to push to the node
-await player.filters
-  .setPreset("rock")
-  .setTimescale({ speed: 1.1, pitch: 1.0, rate: 1.0 })
-  .setKaraoke({ level: 1.0 })
-  .apply();
+await player.filters.setPreset("rock").setTimescale({ speed: 1.1, pitch: 1.0, rate: 1.0 }).setKaraoke({ level: 1.0 }).apply();
 
 // Merge a partial payload and apply in one call
 await player.filters.set({ timescale: { speed: 1.15 }, lowPass: { smoothing: 20 } });
@@ -218,11 +239,11 @@ out, and a small `autoplaySampleSize` window keeps picks from feeling robotic.
 
 ```ts
 const manager = new Moodenglink({
-  nodes,
-  autoPlay: true,               // or per-player: player.setAutoplay(true)
-  autoplaySampleSize: 5,
-  autoplayRequester: client.user, // credit autoplayed tracks to the bot, not the last requester
-  send,
+	nodes,
+	autoPlay: true, // or per-player: player.setAutoplay(true)
+	autoplaySampleSize: 5,
+	autoplayRequester: client.user, // credit autoplayed tracks to the bot, not the last requester
+	send,
 });
 ```
 
@@ -269,13 +290,13 @@ Categories: `sponsor`, `selfpromo`, `interaction`, `intro`, `outro`, `preview`, 
 import { Moodenglink, leastLoadNode } from "moodenglink";
 
 const manager = new Moodenglink({
-  nodes: [
-    { host: "eu-1", port: 2333, password: "…", priority: 10 },
-    { host: "eu-2", port: 2333, password: "…", priority: 5 },
-  ],
-  sorter: leastLoadNode, // lowest-penalty node (CPU + frames + players)
-  autoMove: true,        // move players off a node that runs out of retries
-  send,
+	nodes: [
+		{ host: "eu-1", port: 2333, password: "…", priority: 10 },
+		{ host: "eu-2", port: 2333, password: "…", priority: 5 },
+	],
+	sorter: leastLoadNode, // lowest-penalty node (CPU + frames + players)
+	autoMove: true, // move players off a node that runs out of retries
+	send,
 });
 ```
 
@@ -326,15 +347,15 @@ plays — no wasted searches for tracks the user skips past.
 
 ```ts
 for (const item of spotifyItems) {
-  player.queue.add(
-    manager.buildUnresolved({
-      title: item.name,
-      author: item.artists[0].name,
-      duration: item.duration_ms,
-      source: "youtube",           // where to resolve from
-      requester: interaction.user.id,
-    }),
-  );
+	player.queue.add(
+		manager.buildUnresolved({
+			title: item.name,
+			author: item.artists[0].name,
+			duration: item.duration_ms,
+			source: "youtube", // where to resolve from
+			requester: interaction.user.id,
+		}),
+	);
 }
 
 await player.play(); // the first item is resolved here, closest-match by author + duration
@@ -350,15 +371,15 @@ Unresolvable items are skipped automatically. Use `isUnresolvedTrack(item)` to t
 import { Plugin, Moodenglink } from "moodenglink";
 
 class MyPlugin extends Plugin {
-  readonly name = "my-plugin";
-  load(manager: Moodenglink) {
-    manager.on("trackStart", (player, track) => {
-      /* custom behaviour */
-    });
-  }
-  unload(manager: Moodenglink) {
-    /* cleanup */
-  }
+	readonly name = "my-plugin";
+	load(manager: Moodenglink) {
+		manager.on("trackStart", (player, track) => {
+			/* custom behaviour */
+		});
+	}
+	unload(manager: Moodenglink) {
+		/* cleanup */
+	}
 }
 
 manager.use(new MyPlugin());
@@ -372,12 +393,16 @@ Swap in your own subclasses — the manager instantiates them everywhere:
 ```ts
 import { Structure } from "moodenglink";
 
-Structure.extend("Player", (Player) => class extends Player {
-  async announceAndPlay() {
-    await this.play();
-    console.log("Now playing:", this.current?.title);
-  }
-});
+Structure.extend(
+	"Player",
+	(Player) =>
+		class extends Player {
+			async announceAndPlay() {
+				await this.play();
+				console.log("Now playing:", this.current?.title);
+			}
+		},
+);
 ```
 
 Extendable: `Player`, `Queue`, `Node`, `Filters`.
@@ -386,16 +411,16 @@ Extendable: `Player`, `Queue`, `Node`, `Filters`.
 
 ## 📡 Events
 
-| Event | Payload |
-| ----- | ------- |
-| `nodeCreate` · `nodeConnect` · `nodeReconnect` · `nodeDisconnect` · `nodeError` · `nodeDestroy` · `nodeStats` · `nodeRaw` | node lifecycle |
-| `playerCreate` · `playerDestroy` · `playerMove` · `playerDisconnect` · `playerStateUpdate` | player lifecycle |
-| `trackStart` · `trackEnd` · `trackStuck` · `trackError` | `(player, track, payload)` |
-| `queueEnd` | `(player, lastTrack, payload)` |
-| `socketClosed` | `(player, payload)` |
-| `lyricsFound` · `lyricsLine` · `lyricsNotFound` | `(player, …, payload)` |
-| `segmentsLoaded` · `segmentSkipped` · `chaptersLoaded` · `chapterStarted` | SponsorBlock |
-| `raw` · `debug` | low-level diagnostics |
+| Event                                                                                                                     | Payload                        |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `nodeCreate` · `nodeConnect` · `nodeReconnect` · `nodeDisconnect` · `nodeError` · `nodeDestroy` · `nodeStats` · `nodeRaw` | node lifecycle                 |
+| `playerCreate` · `playerDestroy` · `playerMove` · `playerDisconnect` · `playerStateUpdate`                                | player lifecycle               |
+| `trackStart` · `trackEnd` · `trackStuck` · `trackError`                                                                   | `(player, track, payload)`     |
+| `queueEnd`                                                                                                                | `(player, lastTrack, payload)` |
+| `socketClosed`                                                                                                            | `(player, payload)`            |
+| `lyricsFound` · `lyricsLine` · `lyricsNotFound`                                                                           | `(player, …, payload)`         |
+| `segmentsLoaded` · `segmentSkipped` · `chaptersLoaded` · `chapterStarted`                                                 | SponsorBlock                   |
+| `raw` · `debug`                                                                                                           | low-level diagnostics          |
 
 ## 🔎 Search platforms
 

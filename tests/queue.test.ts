@@ -58,4 +58,25 @@ describe("Queue", () => {
 		expect(q.current?.identifier).toBe("now");
 		expect(q.previous[0].identifier).toBe("before");
 	});
+
+	it("queries upcoming tracks with fuzzy text and declarative fields", () => {
+		const q = new Queue();
+		q.add([
+			{ ...track("a", 1_000), title: "Night Drive", author: "Moo", sourceName: "youtube" },
+			{ ...track("b", 5_000), title: "Morning Sun", author: "Hippo", sourceName: "soundcloud" },
+		]);
+
+		expect(q.findTracks("night").map((item) => item.identifier)).toEqual(["a"]);
+		expect(q.findTrack({ author: /^hip/i, minDuration: 2_000 })?.identifier).toBe("b");
+		expect(q.findTracks({ sourceName: "tube", maxDuration: 2_000 })).toHaveLength(1);
+	});
+
+	it("removes matching tracks while preserving their original order", () => {
+		const q = new Queue();
+		q.add([track("a", 1_000), track("b", 3_000), track("c", 2_000), track("d", 4_000)]);
+
+		const removed = q.removeTracks({ minDuration: 2_000, maxDuration: 3_000 });
+		expect(removed.map((item) => item.identifier)).toEqual(["b", "c"]);
+		expect(q.map((item) => item.identifier)).toEqual(["a", "d"]);
+	});
 });

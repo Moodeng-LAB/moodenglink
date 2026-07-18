@@ -12,7 +12,7 @@ import type {
 	PlayerState,
 	SponsorBlockCategory,
 } from "../types/Op";
-import type { PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
+import type { PlayerDestroyOptions, PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
 import type { UpdatePlayerBody } from "../types/Rest";
 import { buildTrack, clamp, isUnresolvedTrack, sleep } from "../utils/utils";
@@ -102,6 +102,9 @@ export class Player {
 	 */
 	private endIntent: "stop" | "skip" | null = null;
 
+	/** Makes destroy idempotent when voice, queue and user cleanup race. */
+	private destroyPromise: Promise<void> | null = null;
+
 	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
 		this.manager = manager;
 		this.node = node;
@@ -157,6 +160,15 @@ export class Player {
 		this.state = "DISCONNECTED";
 		this.manager.emit("playerDisconnect", this, previous);
 		return this;
+	}
+
+	/** @internal Applies a Discord-side disconnect without sending another OP 4. */
+	public handleVoiceDisconnect(): void {
+		const previous = this.voiceChannel;
+		this.voiceChannel = null;
+		this.connected = false;
+		this.state = "DISCONNECTED";
+		this.manager.emit("playerDisconnect", this, previous);
 	}
 
 	/** Moves the player to another voice channel. */
@@ -318,16 +330,27 @@ export class Player {
 		return this;
 	}
 
-	/** Destroys the player: leaves voice, tears down the node player, forgets it. */
-	public async destroy(disconnect = true): Promise<void> {
-		this.state = "DESTROYING";
-		if (disconnect) this.disconnect();
-		await this.node.rest.destroyPlayer(this.guild).catch(() => null);
-		if (this.manager.options.store) {
-			await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
-		}
-		this.manager.players.delete(this.guild);
-		this.manager.emit("playerDestroy", this);
+	/**
+	 * Destroys the player and emits a machine-readable reason.
+	 * A boolean argument remains supported for backwards compatibility.
+	 */
+	public destroy(options: boolean | PlayerDestroyOptions = {}): Promise<void> {
+		if (this.destroyPromise) return this.destroyPromise;
+		const normalized: PlayerDestroyOptions = typeof options === "boolean" ? { disconnect: options } : options;
+		const disconnect = normalized.disconnect ?? true;
+		const reason = normalized.reason ?? "manual";
+
+		this.destroyPromise = (async () => {
+			if (disconnect) this.disconnect();
+			this.state = "DESTROYING";
+			await this.node.rest.destroyPlayer(this.guild).catch(() => null);
+			if (this.manager.options.store) {
+				await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
+			}
+			this.manager.players.delete(this.guild);
+			this.manager.emit("playerDestroy", this, { reason, disconnected: disconnect });
+		})();
+		return this.destroyPromise;
 	}
 
 	/* ------------------------------ user data ------------------------------ */
@@ -506,18 +529,28 @@ export class Player {
 		this.queue.current = null;
 		await this.save();
 		this.manager.emit("queueEnd", this, previous, payload);
+		if (this.manager.options.playerBehavior?.destroyOnQueueEnd) {
+			await this.destroy({ reason: "queue-end" });
+		}
 	}
 
 	/** @internal */
 	public handleTrackStuck(payload: TrackStuckEvent): void {
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackStuck", this, track, payload);
+		this.autoSkipPlaybackError();
 	}
 
 	/** @internal */
 	public handleTrackException(payload: TrackExceptionEvent): void {
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackError", this, track, payload);
+		this.autoSkipPlaybackError();
+	}
+
+	private autoSkipPlaybackError(): void {
+		if (!this.manager.options.playerBehavior?.autoSkipOnError || !this.playing || this.endIntent) return;
+		void this.skip().catch((error) => this.manager.emit("nodeError", this.node, error as Error));
 	}
 
 	/**
