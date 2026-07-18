@@ -6,7 +6,7 @@
 import type { Collection } from "@discordjs/collection";
 import type { Node } from "../classes/Node";
 import type { Player } from "../classes/Player";
-import type { NodeOptions, NodeStats } from "./Node";
+import type { NodeCapabilityReport, NodeOptions, NodeStats } from "./Node";
 import type { PlayerDestroyContext, PlayerOptions, Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
 import type { SearchPlatform } from "../utils/sources";
 import type {
@@ -37,6 +37,8 @@ export interface SessionStore {
 	keys(): Promise<string[]> | string[];
 }
 
+export type StoreOperation = "get" | "set" | "delete" | "keys";
+
 /** Built-in defaults for common deployment sizes. Omit this to preserve v1 behaviour. */
 export type ManagerPreset = "minimal" | "recommended" | "resilient";
 
@@ -56,7 +58,7 @@ export interface SearchPolicy {
 
 /** Default lifecycle behaviour for every player. All switches are opt-in except voice cleanup. */
 export interface PlayerBehaviorOptions {
-	/** Advance after TrackStuck/TrackException. Defaults to `false`. */
+	/** Advance after TrackStuck. Exceptions advance through their TrackEnd event. */
 	autoSkipOnError?: boolean;
 	/** Destroy the player when Discord removes the bot from voice. Defaults to `true`. */
 	destroyOnVoiceDisconnect?: boolean;
@@ -117,6 +119,8 @@ export interface ManagerOptions {
 	trackPartial?: (keyof Track)[];
 	/** Optional storage backend enabling session resuming and player persistence. */
 	store?: SessionStore;
+	/** Persist live positions at most this often in ms. Defaults to `15000`; `false` disables it. */
+	positionSaveInterval?: number | false;
 	/**
 	 * Enables in-memory caching of search results to cut down on REST calls.
 	 * Pass `true` for defaults (30s TTL, 100 entries) or fine-tune the values.
@@ -150,6 +154,8 @@ export interface ManagerEvents {
 	nodeDestroy: [node: Node];
 	nodeRaw: [payload: unknown];
 	nodeStats: [node: Node, stats: NodeStats];
+	nodeCapabilityMismatch: [node: Node, report: NodeCapabilityReport];
+	storeError: [error: Error, operation: StoreOperation, key?: string];
 
 	playerCreate: [player: Player];
 	playerDestroy: [player: Player, context: PlayerDestroyContext];

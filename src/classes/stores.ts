@@ -35,6 +35,10 @@ export interface RedisLike {
 	set(key: string, value: string): Promise<unknown>;
 	del(key: string): Promise<unknown>;
 	keys(pattern: string): Promise<string[]>;
+	/** node-redis v4 cursor API (preferred over blocking KEYS when available). */
+	scanIterator?(options: { MATCH: string; COUNT: number }): AsyncIterable<string | string[]>;
+	/** ioredis cursor API (preferred over blocking KEYS when available). */
+	scan?(cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
 }
 
 /**
@@ -65,7 +69,24 @@ export class RedisStore implements SessionStore {
 	}
 
 	public async keys(): Promise<string[]> {
-		const keys = await this.redis.keys(`${this.prefix}moodenglink:player:*`);
+		const pattern = `${this.prefix}moodenglink:player:*`;
+		const keys: string[] = [];
+		if (this.redis.scanIterator) {
+			for await (const batch of this.redis.scanIterator({ MATCH: pattern, COUNT: 100 })) {
+				if (Array.isArray(batch)) keys.push(...batch);
+				else keys.push(batch);
+			}
+		} else if (this.redis.scan) {
+			let cursor = "0";
+			do {
+				const [next, batch] = await this.redis.scan(cursor, "MATCH", pattern, "COUNT", 100);
+				cursor = next;
+				keys.push(...batch);
+			} while (cursor !== "0");
+		} else {
+			// Compatibility fallback for minimal Redis-like clients.
+			keys.push(...(await this.redis.keys(pattern)));
+		}
 		// Strip the prefix so the manager sees the canonical keys it wrote.
 		return this.prefix ? keys.map((k) => k.slice(this.prefix.length)) : keys;
 	}

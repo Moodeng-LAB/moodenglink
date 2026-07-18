@@ -19,12 +19,15 @@ import type {
 	VoiceState,
 	PlayerOptions,
 	PlayerDestroyOptions,
+	QueueItem,
 } from "../types/Player";
+import type { FilterPayload } from "../types/Filters";
 import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
 import { TTLCache } from "../utils/cache";
 import { buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
 import { resolveAutoplayCandidates, trackKeys } from "../utils/autoplay";
+import { version } from "../version";
 import { Node } from "./Node";
 import { Player } from "./Player";
 import { Structure } from "./Structure";
@@ -103,7 +106,7 @@ export class Moodenglink extends EventEmitter {
 		const preset = presetDefaults(options.preset);
 		this.options = {
 			shards: 1,
-			clientName: "Moodenglink",
+			clientName: `Moodenglink/${version}`,
 			autoPlay: false,
 			autoMove: true,
 			autoResume: false,
@@ -217,7 +220,12 @@ export class Moodenglink extends EventEmitter {
 	/** Creates (or returns the existing) player for a guild. */
 	public create(options: PlayerOptions): Player {
 		const existing = this.players.get(options.guild);
-		if (existing) return existing;
+		if (existing) {
+			if (existing.state === "DESTROYING") {
+				throw new Error(`Player "${options.guild}" is being destroyed; await destroy() before recreating it.`);
+			}
+			return existing;
+		}
 
 		const defaults = this.options.playerDefaults;
 		const merged: PlayerOptions = {
@@ -393,6 +401,7 @@ export class Moodenglink extends EventEmitter {
 	 */
 	public async handleAutoplay(player: Player, previous: Track): Promise<boolean> {
 		if (!previous) return false;
+		const expectedCurrent = player.current;
 		// Candidate lookups still seed from whoever requested the finished track,
 		// but the queued track is stamped with `autoplayRequester` when configured
 		// (e.g. the client user, or `null`) so panels don't credit an autoplayed
@@ -423,6 +432,11 @@ export class Moodenglink extends EventEmitter {
 		const window = Math.max(1, Math.min(this.options.autoplaySampleSize ?? 5, pool.length));
 		const next = { ...pool[Math.floor(Math.random() * window)], requester };
 
+		// A user may have queued/started something while recommendation lookup was
+		// in flight. Never let stale autoplay replace that newer intent.
+		if (this.players.get(player.guild) !== player || player.state === "DESTROYING" || player.current !== expectedCurrent || player.queue.length > 0) {
+			return false;
+		}
 		player.queue.add(next);
 		await player.play();
 		return true;
@@ -469,58 +483,111 @@ export class Moodenglink extends EventEmitter {
 
 	/** @internal Migrates all players off a dead node onto the next best one. */
 	public async handleNodeFailover(deadNode: Node): Promise<void> {
-		const target = this.nodes.filter((n) => n !== deadNode && n.connected && n.options.playback).first();
-		if (!target) return;
-
-		const affected = this.players.filter((p) => p.node === deadNode);
+		const target = this.options.autoMove ? this.selectNode((n) => n !== deadNode && n.options.playback) : undefined;
+		const affected = [...this.players.values()].filter((player) => player.node === deadNode);
 		for (const player of affected.values()) {
-			await player.moveNode(target).catch((error) => this.emit("nodeError", target, error as Error));
+			if (!target) {
+				await player.destroy({ disconnect: true, reason: "node-unavailable" });
+				continue;
+			}
+			await player.moveNode(target).catch(async (error) => {
+				this.emit("nodeError", target, error as Error);
+				await player.destroy({ disconnect: true, reason: "node-unavailable" });
+			});
 		}
 	}
 
 	/** @internal Restores persisted players onto a freshly-connected node. */
-	public async resumePlayers(node: Node): Promise<void> {
+	public async resumePlayers(node: Node, replay = true): Promise<void> {
 		const store = this.options.store;
 		if (!store) return;
 
-		const keys = await Promise.resolve(store.keys());
+		let keys: string[];
+		try {
+			keys = await Promise.resolve(store.keys());
+		} catch (error) {
+			this.emit("storeError", error as Error, "keys");
+			return;
+		}
 		for (const key of keys) {
 			if (!key.startsWith("moodenglink:player:")) continue;
-			const raw = await Promise.resolve(store.get(key));
+			let raw: string | null;
+			try {
+				raw = await Promise.resolve(store.get(key));
+			} catch (error) {
+				this.emit("storeError", error as Error, "get", key);
+				continue;
+			}
 			if (!raw) continue;
 
 			try {
 				const data = JSON.parse(raw) as ReturnType<Player["toJSON"]>;
-				if (data.node !== node.id) continue;
+				if (data.node !== node.id || typeof data.guild !== "string" || !data.guild) continue;
+				if (typeof data.voiceChannel !== "string") continue;
+				const existing = this.players.get(data.guild);
+				if (existing) {
+					if (replay && existing.node === node) await existing.restoreNodeState();
+					continue;
+				}
 
 				const player = this.create({
 					guild: data.guild as string,
-					voiceChannel: (data.voiceChannel as string) ?? undefined,
-					textChannel: (data.textChannel as string) ?? undefined,
+					voiceChannel: typeof data.voiceChannel === "string" ? data.voiceChannel : undefined,
+					textChannel: typeof data.textChannel === "string" ? data.textChannel : undefined,
 					node: node.id,
-					volume: data.volume as number,
+					volume: typeof data.volume === "number" && Number.isFinite(data.volume) ? data.volume : undefined,
+					data: typeof data.data === "object" && data.data !== null ? (data.data as Record<string, unknown>) : undefined,
 				});
 
-				player.repeatMode = data.repeatMode as Player["repeatMode"];
-				player.autoplay = data.autoplay as boolean;
-				if (Array.isArray(data.queue)) player.queue.add(data.queue as Track[]);
-				if (data.current) player.queue.current = data.current as Track;
-				if (Array.isArray(data.previous)) player.queue.previous = data.previous as Track[];
+				if (data.repeatMode === 0 || data.repeatMode === 1 || data.repeatMode === 2) {
+					player.repeatMode = data.repeatMode;
+				}
+				player.autoplay = data.autoplay === true;
+				if (data.filters && typeof data.filters === "object") player.filters.load(data.filters as FilterPayload);
+				if (Array.isArray(data.queue)) {
+					const restored = data.queue.map((item) => this.restoreQueueItem(item)).filter((item): item is QueueItem => item !== null);
+					player.queue.add(restored);
+				}
+				const current = this.restoreQueueItem(data.current);
+				if (current && "encoded" in current) player.queue.current = current;
+				if (Array.isArray(data.previous)) {
+					player.queue.previous = data.previous.map((item) => this.restoreQueueItem(item)).filter((item): item is Track => item !== null && "encoded" in item);
+				}
 
+				if (!replay) {
+					player.paused = data.paused === true;
+					player.playing = player.queue.current !== null && !player.paused;
+				}
 				player.connect();
-				if (player.queue.current) {
+				if (replay && player.queue.current) {
 					// Resume from where playback left off, not from 0. Skip for live
 					// streams (no meaningful position) and clamp within the track.
 					const current = player.queue.current;
 					const saved = typeof data.position === "number" ? data.position : 0;
 					const startTime = current.isStream ? 0 : Math.max(0, Math.min(saved, current.duration || saved));
-					await player.play({ track: current, startTime });
+					await player.play({ track: current, startTime, paused: data.paused === true });
 				}
 				this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
-			} catch {
-				/* ignore malformed entries */
+			} catch (error) {
+				this.emit("debug", `[Moodenglink] Ignored malformed persisted player "${key}": ${(error as Error).message}`);
 			}
 		}
+	}
+
+	private restoreQueueItem(value: unknown): QueueItem | null {
+		if (!value || typeof value !== "object") return null;
+		const item = value as Record<string, unknown>;
+		if (item.unresolved === true && typeof item.title === "string") {
+			return this.buildUnresolved({
+				title: item.title,
+				author: typeof item.author === "string" ? item.author : undefined,
+				duration: typeof item.duration === "number" ? item.duration : undefined,
+				uri: typeof item.uri === "string" ? item.uri : undefined,
+				source: typeof item.sourceName === "string" ? item.sourceName : undefined,
+				requester: item.requester,
+			});
+		}
+		return typeof item.encoded === "string" ? (value as Track) : null;
 	}
 
 	/* ------------------------------ plugins ------------------------------ */

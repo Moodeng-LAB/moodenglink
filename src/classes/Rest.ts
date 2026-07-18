@@ -52,7 +52,8 @@ export class Rest {
 		// Retrying a non-idempotent write whose response was lost can re-issue the
 		// state change (e.g. restart the current track), so only GET retries by default.
 		const canRetry = options.idempotent ?? method === "GET";
-		const maxAttempts = canRetry ? Math.max(1, this.node.options.retryAmount) : 1;
+		// retryAmount means retries after the initial request, matching NodeOptions.
+		const maxAttempts = canRetry ? Math.max(1, this.node.options.retryAmount + 1) : 1;
 		let lastError: unknown;
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -64,27 +65,49 @@ export class Rest {
 				if (response.status === 204) return undefined as T;
 
 				const text = await response.text();
-				const data = text ? JSON.parse(text) : undefined;
+				let data: unknown;
+				try {
+					data = text ? JSON.parse(text) : undefined;
+				} catch {
+					data = text;
+				}
 
 				if (!response.ok) {
-					const trace = typeof data?.trace === "string" ? ` — ${data.trace.split("\n")[0]}` : "";
-					const message = (data && (data.message || data.error)) || response.statusText;
-					// 4xx are deterministic — don't waste retries on them.
-					throw new RestError(`Lavalink REST ${response.status} on ${method} ${endpoint}: ${message}${trace}`, response.status);
+					const payload = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+					const trace = typeof payload?.trace === "string" ? ` — ${payload.trace.split("\n")[0]}` : "";
+					const detail = payload?.message ?? payload?.error ?? (typeof data === "string" ? data : response.statusText);
+					const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+					const retryAfter = Number(response.headers.get("retry-after"));
+					throw new RestError(`Lavalink REST ${response.status} on ${method} ${endpoint}: ${detail}${trace}`, response.status, {
+						method,
+						endpoint,
+						body: data,
+						retryable,
+						retryAfterMs: Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined,
+					});
 				}
 
 				return data as T;
 			} catch (error) {
 				lastError = error;
-				// Only retry transient network/abort failures, never HTTP 4xx/5xx bodies.
-				if (error instanceof RestError || attempt >= maxAttempts) throw error;
 				const abort = (error as Error)?.name === "AbortError";
+				const retryable = !(error instanceof RestError) || error.retryable;
+				if (!retryable || attempt >= maxAttempts) {
+					if (error instanceof RestError) throw error;
+					throw new RestNetworkError(`Lavalink REST ${method} ${endpoint} ${abort ? "timed out" : "failed"}: ${(error as Error)?.message ?? error}`, {
+						method,
+						endpoint,
+						timedOut: abort,
+						cause: error,
+					});
+				}
 				this.node.manager.emit(
 					"debug",
 					`[Rest ${this.node.id}] ${method} ${endpoint} ${abort ? "timed out" : "failed"} (${(error as Error)?.message ?? error}); retry ${attempt}/${maxAttempts - 1}.`,
 				);
 				// Incremental backoff, capped so a large retryAmount can't stall for minutes.
-				await sleep(Math.min(this.node.options.retryDelay * attempt, 15_000));
+				const retryAfter = error instanceof RestError ? error.retryAfterMs : undefined;
+				await sleep(retryAfter === undefined ? Math.min(this.node.options.retryDelay * attempt, 15_000) : Math.max(0, Math.min(retryAfter, 15_000)));
 			} finally {
 				clearTimeout(timeout);
 			}
@@ -104,7 +127,7 @@ export class Rest {
 	}
 
 	public decodeTracks(encodedTracks: string[]) {
-		return this.request("/decodetracks", { method: "POST", body: encodedTracks });
+		return this.request("/decodetracks", { method: "POST", body: encodedTracks, idempotent: true });
 	}
 
 	/* ------------------------------- players ------------------------------- */
@@ -130,14 +153,19 @@ export class Rest {
 		});
 	}
 
-	public destroyPlayer(guildId: string): Promise<void> {
-		return this.request(`${this.sessionPath}/players/${guildId}`, { method: "DELETE" });
+	public async destroyPlayer(guildId: string): Promise<void> {
+		try {
+			await this.request(`${this.sessionPath}/players/${guildId}`, { method: "DELETE", idempotent: true });
+		} catch (error) {
+			// DELETE is idempotent: a player already gone is the desired state.
+			if (!(error instanceof RestError) || error.status !== 404) throw error;
+		}
 	}
 
 	/* ------------------------------- session ------------------------------- */
 
 	public updateSession(resuming: boolean, timeout: number): Promise<{ resuming: boolean; timeout: number }> {
-		return this.request(this.sessionPath, { method: "PATCH", body: { resuming, timeout } });
+		return this.request(this.sessionPath, { method: "PATCH", body: { resuming, timeout }, idempotent: true });
 	}
 
 	/* ------------------------------- node info ------------------------------- */
@@ -169,14 +197,14 @@ export class Rest {
 
 	/** Cancels a live lyrics subscription for a guild. */
 	public unsubscribeLyrics(guildId: string): Promise<void> {
-		return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE" });
+		return this.request(`${this.sessionPath}/players/${guildId}/lyrics/subscribe`, { method: "DELETE", idempotent: true });
 	}
 
 	/* ----------------------- SponsorBlock plugin ----------------------- */
 
 	/** Sets the SponsorBlock categories the node should skip for a guild. */
 	public setSponsorBlockCategories(guildId: string, categories: SponsorBlockCategory[]): Promise<void> {
-		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "PUT", body: categories });
+		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "PUT", body: categories, idempotent: true });
 	}
 
 	/** Gets the SponsorBlock categories currently enabled for a guild. */
@@ -186,17 +214,55 @@ export class Rest {
 
 	/** Clears all SponsorBlock categories for a guild. */
 	public clearSponsorBlockCategories(guildId: string): Promise<void> {
-		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE" });
+		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE", idempotent: true });
 	}
 }
 
-/** Error thrown for non-2xx Lavalink REST responses (carries the HTTP status). */
+interface RestErrorDetails {
+	method?: string;
+	endpoint?: string;
+	body?: unknown;
+	retryable?: boolean;
+	retryAfterMs?: number;
+}
+
+/** Error thrown for non-2xx Lavalink REST responses with structured diagnostics. */
 export class RestError extends Error {
+	public readonly method?: string;
+	public readonly endpoint?: string;
+	public readonly body?: unknown;
+	public readonly retryable: boolean;
+	public readonly retryAfterMs?: number;
+
 	constructor(
 		message: string,
 		public readonly status: number,
+		details: RestErrorDetails = {},
 	) {
 		super(message);
 		this.name = "RestError";
+		this.method = details.method;
+		this.endpoint = details.endpoint;
+		this.body = details.body;
+		this.retryable = details.retryable ?? false;
+		this.retryAfterMs = details.retryAfterMs;
+	}
+}
+
+/** A timeout or transport failure after the configured retries were exhausted. */
+export class RestNetworkError extends Error {
+	public readonly code = "LAVALINK_NETWORK_ERROR";
+	public readonly method: string;
+	public readonly endpoint: string;
+	public readonly timedOut: boolean;
+	public readonly cause: unknown;
+
+	constructor(message: string, details: { method: string; endpoint: string; timedOut: boolean; cause: unknown }) {
+		super(message);
+		this.name = "RestNetworkError";
+		this.method = details.method;
+		this.endpoint = details.endpoint;
+		this.timedOut = details.timedOut;
+		this.cause = details.cause;
 	}
 }

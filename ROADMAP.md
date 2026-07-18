@@ -53,13 +53,12 @@ Last updated: 2026-07-06
 - ✅ TypeScript, strict; builds CJS + ESM + `.d.ts` (tsup)
 - ✅ `dist/` committed so `bun add github:…` / git installs work with no build step
 - ✅ **CI** — GitHub Actions: type-check + **test** + build + auto-commit `dist` on push
-- ✅ **Test suite (Vitest)** — 71 tests across queue, cache, sources, utils, equalizers,
-      stores, filters, node penalties and a mocked manager/search/voice integration
-      (found & fixed 3 bugs: Queue species leak, `dedupe` order, out-of-range EQ gain)
+- ✅ **Test suite (Vitest)** — 146 tests across playback races, reconnect/failover,
+      persistence, REST retries, queue, cache, stores, filters and manager/voice integration
 - ✅ **Release automation** — [changesets](https://github.com/changesets/changesets) +
       `.github/workflows/release.yml`: contributors add a changeset, the workflow opens a
       "Version Packages" PR, and merging it publishes to npm (public, with provenance)
-- ✅ **Published to npm** — `moodenglink@1.0.0` live (`npm install moodenglink`)
+- ✅ **Published to npm** — automated releases live (`npm install moodenglink`)
 
 ---
 
@@ -71,7 +70,7 @@ Last updated: 2026-07-06
 
 ## 📋 Planned (next up)
 
-- _Nothing actively planned — `1.0.0` is live on npm; releases now run via changesets._
+- _Nothing actively planned — releases run via changesets._
 
 ## 🚫 Not applicable (by architecture)
 

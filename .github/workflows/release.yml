@@ -40,7 +40,9 @@ jobs:
           # `npm run release` -> `changeset publish` (prepublishOnly rebuilds dist).
           publish: npm run release
           version: npm run version
-          commit: "chore: version packages [skip ci]"
+          # Keep this message free of "[skip ci]": a squash merge of the Version
+          # PR must still trigger this workflow and publish the release.
+          commit: "chore: version packages"
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

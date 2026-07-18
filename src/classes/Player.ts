@@ -14,7 +14,7 @@ import type {
 } from "../types/Op";
 import type { PlayerDestroyOptions, PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
-import type { UpdatePlayerBody } from "../types/Rest";
+import type { LavalinkPlayer, UpdatePlayerBody } from "../types/Rest";
 import { buildTrack, clamp, isUnresolvedTrack, sleep } from "../utils/utils";
 import type { Filters } from "./Filters";
 import type { Moodenglink } from "./Moodenglink";
@@ -100,10 +100,20 @@ export class Player {
 	 * intent here to tell them apart: a stop ends playback cleanly (no repeat, no
 	 * autoplay), a skip advances to the next track. Cleared as soon as it's read.
 	 */
-	private endIntent: "stop" | "skip" | null = null;
+	private endIntent: { type: "stop" | "skip"; encoded: string | null } | null = null;
 
 	/** Makes destroy idempotent when voice, queue and user cleanup race. */
 	private destroyPromise: Promise<void> | null = null;
+
+	/** Serialises persistence writes so an older snapshot cannot win a race. */
+	private saveChain: Promise<void> = Promise.resolve();
+
+	/** Prevents concurrent unresolved-track consumers from shifting the queue twice. */
+	private playChain: Promise<void> = Promise.resolve();
+
+	/** Coalesces bursts of recoverable voice-close events into one reconnect. */
+	private voiceReconnectPending = false;
+	private lastPositionSaveAt = 0;
 
 	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
 		this.manager = manager;
@@ -128,36 +138,50 @@ export class Player {
 
 	/** Joins the configured voice channel via the Discord gateway. */
 	public connect(): this {
+		if (this.state === "DESTROYING") throw new Error(`Player "${this.guild}" is being destroyed.`);
 		if (!this.voiceChannel) throw new Error(`Player "${this.guild}" has no voice channel set.`);
 
 		// Stay "CONNECTING" until Lavalink reports a live voice connection via the
 		// first playerUpdate — marking `connected`/"CONNECTED" here would be an
 		// optimistic guess (Discord hasn't confirmed the voice server yet) and
 		// leaves the flag stuck `true` if the handshake never completes.
+		const previousState = this.state;
 		this.state = "CONNECTING";
-		this.manager.options.send(this.guild, {
-			op: 4,
-			d: {
-				guild_id: this.guild,
-				channel_id: this.voiceChannel,
-				self_mute: this.selfMute,
-				self_deaf: this.selfDeafen,
-			},
-		});
+		try {
+			this.manager.options.send(this.guild, {
+				op: 4,
+				d: {
+					guild_id: this.guild,
+					channel_id: this.voiceChannel,
+					self_mute: this.selfMute,
+					self_deaf: this.selfDeafen,
+				},
+			});
+		} catch (error) {
+			this.state = previousState;
+			throw error;
+		}
 		return this;
 	}
 
 	/** Leaves the voice channel but keeps the player and queue alive. */
 	public disconnect(): this {
 		const previous = this.voiceChannel;
-		this.state = "DISCONNECTING";
-		this.manager.options.send(this.guild, {
-			op: 4,
-			d: { guild_id: this.guild, channel_id: null, self_mute: false, self_deaf: false },
-		});
+		const previousState = this.state;
+		const destroying = previousState === "DESTROYING";
+		if (!destroying) this.state = "DISCONNECTING";
+		try {
+			this.manager.options.send(this.guild, {
+				op: 4,
+				d: { guild_id: this.guild, channel_id: null, self_mute: false, self_deaf: false },
+			});
+		} catch (error) {
+			this.state = previousState;
+			throw error;
+		}
 		this.voiceChannel = null;
 		this.connected = false;
-		this.state = "DISCONNECTED";
+		if (!destroying) this.state = "DISCONNECTED";
 		this.manager.emit("playerDisconnect", this, previous);
 		return this;
 	}
@@ -165,9 +189,10 @@ export class Player {
 	/** @internal Applies a Discord-side disconnect without sending another OP 4. */
 	public handleVoiceDisconnect(): void {
 		const previous = this.voiceChannel;
+		const destroying = this.state === "DESTROYING";
 		this.voiceChannel = null;
 		this.connected = false;
-		this.state = "DISCONNECTED";
+		if (!destroying) this.state = "DISCONNECTED";
 		this.manager.emit("playerDisconnect", this, previous);
 	}
 
@@ -192,28 +217,49 @@ export class Player {
 
 		await oldNode.rest.destroyPlayer(this.guild).catch(() => null);
 		this.node = node;
-
-		await this.sendVoiceUpdate();
-		if (this.current) {
-			await this.node.rest.updatePlayer(this.guild, {
-				track: { encoded: this.current.encoded },
-				position: this.position,
-				volume: this.volume,
-				paused: this.paused,
-				filters: this.filters.toJSON(),
-			});
-		}
+		await this.restoreNodeState();
 
 		this.state = "CONNECTED";
 		this.manager.emit("playerMove", this, oldNode, node);
+		await this.save();
 		return this;
+	}
+
+	/** @internal Recreates this player's voice and playback state on its node. */
+	public async restoreNodeState(): Promise<void> {
+		await this.sendVoiceUpdate();
+		if (!this.current) return;
+		await this.node.rest.updatePlayer(this.guild, {
+			track: { encoded: this.current.encoded },
+			position: this.position,
+			volume: this.volume,
+			paused: this.paused,
+			filters: this.filters.toJSON(),
+		});
 	}
 
 	/* ------------------------------- playback ------------------------------- */
 
 	/** Starts playback. With no options, plays the next queued track. */
-	public async play(options: PlayOptions = {}): Promise<this> {
+	public play(options: PlayOptions = {}): Promise<this> {
+		const operation = this.playChain.then(
+			() => this.performPlay(options),
+			() => this.performPlay(options),
+		);
+		this.playChain = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	private async performPlay(options: PlayOptions): Promise<this> {
+		if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) {
+			throw new Error(`Player "${this.guild}" is being destroyed.`);
+		}
 		let track: Track | null = null;
+		let dequeued: QueueItem | null = null;
+		const previous = this.queue.current;
 
 		if (options.track) {
 			track = isUnresolvedTrack(options.track) ? await this.resolveUnresolved(options.track) : options.track;
@@ -222,23 +268,39 @@ export class Player {
 			while (this.queue.length && !track) {
 				const item = this.queue.shift()!;
 				track = isUnresolvedTrack(item) ? await this.resolveUnresolved(item) : item;
+				if (track) dequeued = item;
 			}
 		}
 
 		if (!track) throw new Error("Queue is empty — nothing to play.");
 
-		this.queue.current = track;
-
 		const body: UpdatePlayerBody = {
 			track: { encoded: track.encoded, userData: track.userData ?? {} },
 			volume: this.volume,
+			filters: this.filters.toJSON(),
 		};
 		if (options.startTime !== undefined) body.position = options.startTime;
 		if (options.endTime !== undefined) body.endTime = options.endTime;
 		if (options.paused !== undefined) body.paused = options.paused;
 
-		await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
+		let response: LavalinkPlayer;
+		try {
+			response = await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
+		} catch (error) {
+			if (dequeued) this.queue.unshift(dequeued);
+			this.queue.current = previous;
+			throw error;
+		}
+		if ((this.state as State) === "DESTROYING" || this.manager.players.get(this.guild) !== this) return this;
 
+		// Lavalink leaves the existing track untouched when noReplace is true.
+		// Keep the dequeued item and client state intact in that case.
+		if (options.noReplace && response?.track?.encoded && response.track.encoded !== track.encoded) {
+			if (dequeued) this.queue.unshift(dequeued);
+			return this;
+		}
+
+		this.queue.current = track;
 		this.playing = true;
 		this.paused = options.paused ?? false;
 		this.position = options.startTime ?? 0;
@@ -258,22 +320,36 @@ export class Player {
 
 	/** Stops the current track. Pass `false` to keep the queue intact. */
 	public async stop(clearQueue = true): Promise<this> {
+		const cleared = clearQueue ? [...this.queue] : [];
 		if (clearQueue) this.queue.clear();
 		// Signal intent before the null-track update so the resulting trackEnd
 		// ("stopped") ends playback cleanly instead of repeating/autoplaying.
-		this.endIntent = "stop";
-		await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+		this.endIntent = { type: "stop", encoded: this.current?.encoded ?? null };
+		try {
+			await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+		} catch (error) {
+			this.endIntent = null;
+			if (cleared.length) this.queue.unshift(...cleared);
+			throw error;
+		}
 		this.playing = false;
 		this.queue.current = null;
+		await this.save();
 		return this;
 	}
 
 	/** Skips `amount` tracks (default 1) by ending the current track early. */
 	public async skip(amount = 1): Promise<this> {
-		if (amount > 1) this.queue.splice(0, amount - 1);
+		const removed = amount > 1 ? this.queue.splice(0, amount - 1) : [];
 		// A skip advances to the next track but must not re-trigger repeat.
-		this.endIntent = "skip";
-		await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+		this.endIntent = { type: "skip", encoded: this.current?.encoded ?? null };
+		try {
+			await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
+		} catch (error) {
+			this.endIntent = null;
+			if (removed.length) this.queue.unshift(...removed);
+			throw error;
+		}
 		return this;
 	}
 
@@ -291,7 +367,8 @@ export class Player {
 		if (state) this.position = this.position;
 		await this.node.rest.updatePlayer(this.guild, { paused: state });
 		this.paused = state;
-		this.playing = !state;
+		this.playing = !state && this.current !== null;
+		await this.save();
 		return this;
 	}
 
@@ -306,14 +383,16 @@ export class Player {
 		const target = clamp(position, 0, this.current.duration);
 		await this.node.rest.updatePlayer(this.guild, { position: target });
 		this.position = target;
+		await this.save();
 		return this;
 	}
 
 	/** Sets the volume (0-1000). */
 	public async setVolume(volume: number): Promise<this> {
-		this.volume = clamp(volume, 0, 1000);
-		await this.node.rest.updatePlayer(this.guild, { volume: this.volume });
-		this.filters.volume = this.volume / 100;
+		const next = clamp(volume, 0, 1000);
+		await this.node.rest.updatePlayer(this.guild, { volume: next });
+		this.volume = next;
+		this.filters.volume = next / 100;
 		await this.save();
 		return this;
 	}
@@ -321,12 +400,14 @@ export class Player {
 	/** Sets the repeat mode (`NONE`, `TRACK`, `QUEUE`). */
 	public setRepeatMode(mode: RepeatMode): this {
 		this.repeatMode = mode;
+		void this.save();
 		return this;
 	}
 
 	/** Toggles autoplay of related tracks when the queue empties. */
 	public setAutoplay(state: boolean): this {
 		this.autoplay = state;
+		void this.save();
 		return this;
 	}
 
@@ -341,13 +422,26 @@ export class Player {
 		const reason = normalized.reason ?? "manual";
 
 		this.destroyPromise = (async () => {
-			if (disconnect) this.disconnect();
 			this.state = "DESTROYING";
+			if (disconnect) {
+				try {
+					this.disconnect();
+				} catch (error) {
+					this.manager.emit("debug", `[Player ${this.guild}] Voice disconnect send failed during destroy: ${(error as Error).message}`);
+					this.handleVoiceDisconnect();
+				}
+			}
+			this.state = "DESTROYING";
+			await this.playChain;
 			await this.node.rest.destroyPlayer(this.guild).catch(() => null);
 			if (this.manager.options.store) {
-				await Promise.resolve(this.manager.options.store.delete(`moodenglink:player:${this.guild}`)).catch(() => null);
+				await this.saveChain;
+				const key = `moodenglink:player:${this.guild}`;
+				await Promise.resolve(this.manager.options.store.delete(key)).catch((error) => {
+					this.manager.emit("storeError", error as Error, "delete", key);
+				});
 			}
-			this.manager.players.delete(this.guild);
+			if (this.manager.players.get(this.guild) === this) this.manager.players.delete(this.guild);
 			this.manager.emit("playerDestroy", this, { reason, disconnected: disconnect });
 		})();
 		return this.destroyPromise;
@@ -358,6 +452,7 @@ export class Player {
 	/** Stores an arbitrary value on the player. Chainable. */
 	public set<T = unknown>(key: string, value: T): this {
 		this.data[key] = value;
+		void this.save();
 		return this;
 	}
 
@@ -444,16 +539,16 @@ export class Player {
 			if (this.state === "RESUMING" || this.state === "CONNECTING") this.state = "CONNECTED";
 		}
 		this.manager.emit("playerStateUpdate", this);
+		const interval = this.manager.options.positionSaveInterval ?? 15_000;
+		if (this.manager.options.store && interval !== false && Date.now() - this.lastPositionSaveAt >= Math.max(0, interval)) {
+			this.lastPositionSaveAt = Date.now();
+			void this.save();
+		}
 	}
 
 	/** @internal */
 	public handleTrackStart(payload: TrackStartEvent): void {
-		this.playing = true;
-		this.paused = false;
-		// A fresh track invalidates any pending stop/skip intent that never produced
-		// a trackEnd (e.g. stop() called while nothing was playing), so it can't
-		// bleed into this track's natural finish.
-		this.endIntent = null;
+		this.playing = !this.paused;
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackStart", this, track, payload);
 	}
@@ -464,12 +559,18 @@ export class Player {
 		this.manager.emit("trackEnd", this, track, payload);
 
 		// Read & clear the intent that this end (if any) was our own doing.
-		const intent = this.endIntent;
-		this.endIntent = null;
+		const pending = this.endIntent;
+		const matchesIntent = pending !== null && pending.encoded !== null && pending.encoded === payload.track.encoded;
+		const intent = matchesIntent ? pending.type : null;
+		if (matchesIntent) this.endIntent = null;
 
 		// A track that was replaced by another, or cleaned up as the player is torn
 		// down, must never continue the queue.
 		if (payload.reason === "replaced" || payload.reason === "cleanup") return;
+		if (this.current && this.current.encoded !== payload.track.encoded) return;
+		// A stopped event only advances when it belongs to an explicit skip.
+		// Delayed/orphan stopped events must never kill a newly-started track.
+		if (payload.reason === "stopped" && intent === null) return;
 
 		// An explicit stop() ends playback cleanly — no repeat, no advance, no
 		// autoplay — regardless of repeat mode. The stopped track still joins the
@@ -505,6 +606,7 @@ export class Player {
 	}
 
 	private async advance(previous: Track | null, payload: TrackEndEvent, naturalEnd: boolean): Promise<void> {
+		if ((this.state as State) === "DESTROYING" || this.manager.players.get(this.guild) !== this) return;
 		this.recordPrevious(previous);
 
 		if (this.queue.length > 0) {
@@ -518,11 +620,23 @@ export class Player {
 		if (naturalEnd && (this.autoplay || this.manager.options.autoPlay) && previous && !this.autoplaying) {
 			this.autoplaying = true;
 			try {
-				const queued = await this.manager.handleAutoplay(this, previous).catch(() => false);
+				const queued = await this.manager.handleAutoplay(this, previous).catch((error) => {
+					this.manager.emit("nodeError", this.node, error as Error);
+					return false;
+				});
 				if (queued) return;
 			} finally {
 				this.autoplaying = false;
 			}
+		}
+		if ((this.state as State) === "DESTROYING" || this.manager.players.get(this.guild) !== this) return;
+		// A failed node update may have rolled an autoplay candidate back into
+		// the queue. It is not an empty queue and must not trigger cleanup.
+		if (this.queue.length > 0) {
+			this.playing = false;
+			this.queue.current = null;
+			await this.save();
+			return;
 		}
 
 		this.playing = false;
@@ -545,7 +659,6 @@ export class Player {
 	public handleTrackException(payload: TrackExceptionEvent): void {
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackError", this, track, payload);
-		this.autoSkipPlaybackError();
 	}
 
 	private autoSkipPlaybackError(): void {
@@ -565,7 +678,7 @@ export class Player {
 		this.manager.emit("socketClosed", this, payload);
 
 		// Never fight an intentional teardown, and only recover a real channel.
-		if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel) return;
+		if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel || this.voiceReconnectPending) return;
 		if (!Player.RECOVERABLE_VOICE_CLOSE.has(payload.code)) return;
 
 		const maxTries = this.manager.options.voiceReconnectTries ?? 3;
@@ -580,17 +693,19 @@ export class Player {
 		this.state = "RESUMING";
 		this.manager.emit("debug", `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries} in ${delay}ms.`);
 
-		await sleep(delay);
-		// The player may have been destroyed or disconnected while we waited
-		// (cast: `state` can be mutated by destroy()/disconnect() across the await).
-		if (!this.voiceChannel || (this.state as State) === "DESTROYING") return;
-
-		// Re-join: Discord replies with fresh voice server/state which we forward,
-		// re-establishing the connection (and handing the node a new session).
+		this.voiceReconnectPending = true;
 		try {
+			await sleep(delay);
+			// The player may have been destroyed or disconnected while we waited.
+			if (!this.voiceChannel || (this.state as State) === "DESTROYING") return;
+
+			// Re-join: Discord replies with fresh voice server/state which we forward,
+			// re-establishing the connection (and handing the node a new session).
 			this.connect();
 		} catch (error) {
 			this.manager.emit("nodeError", this.node, error as Error);
+		} finally {
+			this.voiceReconnectPending = false;
 		}
 	}
 
@@ -611,6 +726,7 @@ export class Player {
 			current: this.current,
 			queue: [...this.queue],
 			previous: this.queue.previous,
+			filters: this.filters.toJSON(),
 			voiceState: this.voiceState,
 			data: this.data,
 		};
@@ -619,7 +735,14 @@ export class Player {
 	/** @internal Persists this player to the configured store, if any. */
 	public async save(): Promise<void> {
 		const store = this.manager.options.store;
-		if (!store) return;
-		await Promise.resolve(store.set(`moodenglink:player:${this.guild}`, JSON.stringify(this.toJSON()))).catch(() => null);
+		if (!store || this.state === "DESTROYING") return;
+		const key = `moodenglink:player:${this.guild}`;
+		const snapshot = JSON.stringify(this.toJSON());
+		this.saveChain = this.saveChain.then(async () => {
+			await Promise.resolve(store.set(key, snapshot)).catch((error) => {
+				this.manager.emit("storeError", error as Error, "set", key);
+			});
+		});
+		await this.saveChain;
 	}
 }

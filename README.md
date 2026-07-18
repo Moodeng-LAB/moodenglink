@@ -111,7 +111,7 @@ individual `create`, `search`, queue and `play` APIs.
 | `nodes`                 | `NodeOptions[]`                             | —               | Lavalink nodes to connect to. **Required.**                   |
 | `send`                  | `(guildId, payload) => void`                | —               | Forwards OP4 voice payloads to Discord. **Required.**         |
 | `clientId`              | `string`                                    | —               | Bot user id (or pass it to `init()`).                         |
-| `clientName`            | `string`                                    | `"Moodenglink"` | `Client-Name` header sent to the node.                        |
+| `clientName`            | `string`                                    | `"Moodenglink/<version>"` | `Client-Name` header sent to the node.                |
 | `shards`                | `number`                                    | `1`             | Total shard count.                                            |
 | `preset`                | `"minimal" \| "recommended" \| "resilient"` | —               | Additive deployment defaults; omitted preserves v1 behavior.  |
 | `autoPlay`              | `boolean`                                   | `false`         | Autoplay related tracks (platform radio/recs) at queue end.   |
@@ -124,6 +124,7 @@ individual `create`, `search`, queue and `play` APIs.
 | `defaultSearchPlatform` | `SearchPlatform`                            | `"youtube"`     | Default source for prefix-less queries.                       |
 | `trackPartial`          | `(keyof Track)[]`                           | `[]`            | Fields to strip from tracks (never removes `encoded`).        |
 | `store`                 | `SessionStore`                              | —               | Backend for persistence/resume (Redis, Map…).                 |
+| `positionSaveInterval`  | `number \| false`                           | `15000`         | Throttle live-position persistence; `false` disables it.      |
 | `searchCache`           | `boolean \| { ttl?, maxSize? }`             | `false`         | Cache search results (default 30s TTL, 100 entries).          |
 | `sorter`                | `(nodes) => Collection<string, Node>`       | `leastUsedNode` | Node ordering strategy.                                       |
 | `playerDefaults`        | `Partial<PlayerOptions>`                    | —               | Defaults merged into every player.                            |
@@ -146,6 +147,7 @@ individual `create`, `search`, queue and `play` APIs.
 | `retryDelay`     | `number`  | `5000`              | Base reconnect backoff (ms), grows per attempt. |
 | `requestTimeout` | `number`  | `10000`             | Per-request timeout (ms).                       |
 | `resumeTimeout`  | `number`  | `60`                | Node-side session resume window (s).            |
+| `capabilities`   | `NodeCapabilityRequirements` | `{}`       | Required sources, filters and plugins; optional strict mode. |
 
 ---
 
@@ -305,6 +307,29 @@ playing players, CPU load and dropped/nulled audio frames, biased by each node's
 `priority`. `leastUsedNode` (default) ranks by active player count. Selection is
 allocation-free and short-circuits the common single-node case.
 
+### Capability validation
+
+Validate what each node actually exposes through Lavalink `/info`:
+
+```ts
+const manager = new Moodenglink({
+	nodes: [{
+		host: "localhost",
+		capabilities: {
+			sources: ["youtube"],
+			plugins: ["lavalyrics-plugin"],
+			strict: true,
+		},
+	}],
+	send,
+});
+
+node.supportsSource("youtube");
+node.supportsFilter("timescale");
+node.hasPlugin("lavalyrics-plugin");
+node.validateCapabilities();
+```
+
 ### Voice resilience
 
 Dropped voice connections (close codes `4006`, `4009`, `4014`, `4015`, `1006`)
@@ -325,6 +350,10 @@ Players are serialised on state changes and restored when a node comes up on a
 **cold** session (`autoResume: true`) — a transient reconnect that the node
 resumes is left playing, never restarted.
 
+Position, pause state, filters, user data, node assignment and unresolved queue
+items are restored. Writes are ordered per player, and `RedisStore` uses SCAN
+when the provided client supports it instead of blocking Redis with `KEYS`.
+
 ```ts
 import { Moodenglink, MemoryStore, RedisStore } from "moodenglink";
 
@@ -337,6 +366,8 @@ const manager2 = new Moodenglink({ nodes, autoResume: true, store: new RedisStor
 ```
 
 Or bring your own by implementing `SessionStore` (`get` / `set` / `delete` / `keys`).
+Use a unique Redis prefix per bot deployment. A shared prefix is single-writer;
+multiple processes restoring the same guild require application-level ownership.
 
 ---
 
@@ -413,13 +444,14 @@ Extendable: `Player`, `Queue`, `Node`, `Filters`.
 
 | Event                                                                                                                     | Payload                        |
 | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `nodeCreate` · `nodeConnect` · `nodeReconnect` · `nodeDisconnect` · `nodeError` · `nodeDestroy` · `nodeStats` · `nodeRaw` | node lifecycle                 |
+| `nodeCreate` · `nodeConnect` · `nodeReconnect` · `nodeDisconnect` · `nodeError` · `nodeDestroy` · `nodeStats` · `nodeRaw` · `nodeCapabilityMismatch` | node lifecycle |
 | `playerCreate` · `playerDestroy` · `playerMove` · `playerDisconnect` · `playerStateUpdate`                                | player lifecycle               |
 | `trackStart` · `trackEnd` · `trackStuck` · `trackError`                                                                   | `(player, track, payload)`     |
 | `queueEnd`                                                                                                                | `(player, lastTrack, payload)` |
 | `socketClosed`                                                                                                            | `(player, payload)`            |
 | `lyricsFound` · `lyricsLine` · `lyricsNotFound`                                                                           | `(player, …, payload)`         |
 | `segmentsLoaded` · `segmentSkipped` · `chaptersLoaded` · `chapterStarted`                                                 | SponsorBlock                   |
+| `storeError`                                                                                                              | `(error, operation, key?)`     |
 | `raw` · `debug`                                                                                                           | low-level diagnostics          |
 
 ## 🔎 Search platforms

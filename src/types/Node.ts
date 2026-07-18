@@ -28,6 +28,29 @@ export interface NodeOptions {
 	search?: boolean;
 	/** Whether this node may be used for playback. Defaults to `true`. */
 	playback?: boolean;
+	/**
+	 * Capabilities this node is expected to expose after READY. Missing
+	 * capabilities emit `nodeCapabilityMismatch`; `strict` also rejects the node.
+	 */
+	capabilities?: NodeCapabilityRequirements;
+}
+
+/** Sources, filters and plugins a node is expected to provide. */
+export interface NodeCapabilityRequirements {
+	sources?: string[];
+	filters?: string[];
+	plugins?: string[];
+	/** Remove the node when a requirement is missing or `/info` is unavailable. */
+	strict?: boolean;
+}
+
+/** Result returned by {@link Node.validateCapabilities}. */
+export interface NodeCapabilityReport {
+	available: boolean;
+	valid: boolean;
+	missingSources: string[];
+	missingFilters: string[];
+	missingPlugins: string[];
 }
 
 export interface NodeInfo {

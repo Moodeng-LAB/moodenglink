@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Node } from "../src/classes/Node";
-import { RestError } from "../src/classes/Rest";
+import { RestError, RestNetworkError } from "../src/classes/Rest";
 import type { Moodenglink } from "../src/classes/Moodenglink";
 
 // The Rest layer only needs `emit` off the manager (for debug logs).
@@ -20,7 +20,7 @@ describe("Rest.request retry policy", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(node.rest.getInfo()).rejects.toThrow("ECONNRESET");
-		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(fetchMock).toHaveBeenCalledTimes(4); // initial request + 3 retries
 	});
 
 	it("recovers when a retried GET eventually succeeds", async () => {
@@ -52,5 +52,42 @@ describe("Rest.request retry policy", () => {
 
 		await expect(node.rest.getInfo()).rejects.toBeInstanceOf(RestError);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("retries a transient 503 for idempotent requests", async () => {
+		const node = makeNode();
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(node.rest.getInfo()).resolves.toEqual({ ok: true });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("exposes structured HTTP and network diagnostics", async () => {
+		const node = makeNode({ retryAmount: 0 });
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("bad gateway", { status: 502 })));
+
+		const httpError = await node.rest.getInfo().catch((error) => error as RestError);
+		expect(httpError).toMatchObject({
+			name: "RestError",
+			status: 502,
+			method: "GET",
+			endpoint: "/info",
+			body: "bad gateway",
+			retryable: true,
+		});
+
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNRESET")));
+		const networkError = await node.rest.getInfo().catch((error) => error as RestNetworkError);
+		expect(networkError).toMatchObject({
+			name: "RestNetworkError",
+			code: "LAVALINK_NETWORK_ERROR",
+			method: "GET",
+			endpoint: "/info",
+			timedOut: false,
+		});
 	});
 });
