@@ -338,16 +338,27 @@ export class Player {
 		return this;
 	}
 
-	/** Skips `amount` tracks (default 1) by ending the current track early. */
+	/** Skips `amount` tracks (default 1). */
 	public async skip(amount = 1): Promise<this> {
-		const removed = amount > 1 ? this.queue.splice(0, amount - 1) : [];
-		// A skip advances to the next track but must not re-trigger repeat.
+		if (!Number.isInteger(amount) || amount < 1) throw new RangeError("Amount must be a positive integer.");
+		if (amount > 1) this.queue.splice(0, amount - 1);
+
+		// Prefer replacing the current track with the next one. Lavalink emits
+		// TrackEnd reason "replaced" (ignored by the state machine), so advancement
+		// does not depend on matching encoded strings — critical for LavaSrc/Spotify
+		// where the TrackEnd payload encoded can differ from the client's copy.
+		if (this.queue.length > 0) {
+			if (this.current) this.recordPrevious(this.current);
+			this.endIntent = null;
+			return this.play();
+		}
+
+		// Nothing left to play — null the track and let TrackEnd advance/cleanup.
 		this.endIntent = { type: "skip", encoded: this.current?.encoded ?? null };
 		try {
 			await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
 		} catch (error) {
 			this.endIntent = null;
-			if (removed.length) this.queue.unshift(...removed);
 			throw error;
 		}
 		return this;
@@ -548,6 +559,9 @@ export class Player {
 
 	/** @internal */
 	public handleTrackStart(payload: TrackStartEvent): void {
+		// A fresh TrackStart means any pending stop/skip that never produced a
+		// TrackEnd is obsolete (e.g. stop() while idle, then a new play()).
+		this.endIntent = null;
 		this.playing = !this.paused;
 		const track = this.current ?? buildTrack(payload.track);
 		this.manager.emit("trackStart", this, track, payload);
@@ -556,18 +570,30 @@ export class Player {
 	/** @internal */
 	public async handleTrackEnd(payload: TrackEndEvent): Promise<void> {
 		const track = this.current ?? buildTrack(payload.track);
-		this.manager.emit("trackEnd", this, track, payload);
 
-		// Read & clear the intent that this end (if any) was our own doing.
+		// Consume endIntent without requiring payload.encoded === client encoded.
+		// LavaSrc/Spotify can rewrite the encoded string on TrackEnd; requiring
+		// equality caused skip() to silently stop with tracks still queued.
+		// Stale intents (we already moved on to a different current) are dropped.
 		const pending = this.endIntent;
-		const matchesIntent = pending !== null && pending.encoded !== null && pending.encoded === payload.track.encoded;
-		const intent = matchesIntent ? pending.type : null;
-		if (matchesIntent) this.endIntent = null;
+		let intent: "stop" | "skip" | null = null;
+		if (pending) {
+			const stillOwned =
+				this.current === null || pending.encoded === null || this.current.encoded === pending.encoded;
+			this.endIntent = null;
+			if (stillOwned) intent = pending.type;
+		}
+
+		this.manager.emit("trackEnd", this, track, payload, { intent });
 
 		// A track that was replaced by another, or cleaned up as the player is torn
 		// down, must never continue the queue.
 		if (payload.reason === "replaced" || payload.reason === "cleanup") return;
-		if (this.current && this.current.encoded !== payload.track.encoded) return;
+
+		// Orphan / delayed events: if we already moved on to a different current
+		// track and this end was not our stop/skip, ignore it.
+		if (!intent && this.current && this.current.encoded !== payload.track.encoded) return;
+
 		// A stopped event only advances when it belongs to an explicit skip.
 		// Delayed/orphan stopped events must never kill a newly-started track.
 		if (payload.reason === "stopped" && intent === null) return;
@@ -689,9 +715,18 @@ export class Player {
 		}
 
 		this.voiceReconnectAttempts++;
-		const delay = (this.manager.options.voiceReconnectDelay ?? 1000) * this.voiceReconnectAttempts;
+		// Session invalidation (4006) and timeout (4009) after a process restart need
+		// an immediate OP4 rebind — waiting feels like a stutter. Other recoverable
+		// closes keep the configured backoff. Never leave→join (null then channel);
+		// connect() re-sends the same channel_id only.
+		const baseDelay = this.manager.options.voiceReconnectDelay ?? 1000;
+		const immediate = payload.code === 4006 || payload.code === 4009;
+		const delay = immediate ? 0 : baseDelay * this.voiceReconnectAttempts;
 		this.state = "RESUMING";
-		this.manager.emit("debug", `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries} in ${delay}ms.`);
+		this.manager.emit(
+			"debug",
+			`[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries}${delay ? ` in ${delay}ms` : " immediately"}.`,
+		);
 
 		this.voiceReconnectPending = true;
 		try {

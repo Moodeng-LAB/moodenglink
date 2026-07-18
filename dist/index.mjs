@@ -750,8 +750,12 @@ var Node = class {
     this.reconnectAttempts = 0;
     this.manager.emit("nodeConnect", this);
     this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
-    if (this.manager.options.autoResume && (!payload.resumed || ![...this.manager.players.values()].some((player) => player.node === this))) {
-      await this.manager.resumePlayers(this, !payload.resumed).catch(() => null);
+    if (this.manager.options.autoResume) {
+      if (payload.resumed) {
+        await this.manager.syncResumedPlayers(this).catch(() => null);
+      } else {
+        await this.manager.resumePlayers(this, true).catch(() => null);
+      }
     }
   }
   handleEvent(payload) {
@@ -1119,15 +1123,20 @@ var Player = class _Player {
     await this.save();
     return this;
   }
-  /** Skips `amount` tracks (default 1) by ending the current track early. */
+  /** Skips `amount` tracks (default 1). */
   async skip(amount = 1) {
-    const removed = amount > 1 ? this.queue.splice(0, amount - 1) : [];
+    if (!Number.isInteger(amount) || amount < 1) throw new RangeError("Amount must be a positive integer.");
+    if (amount > 1) this.queue.splice(0, amount - 1);
+    if (this.queue.length > 0) {
+      if (this.current) this.recordPrevious(this.current);
+      this.endIntent = null;
+      return this.play();
+    }
     this.endIntent = { type: "skip", encoded: this.current?.encoded ?? null };
     try {
       await this.node.rest.updatePlayer(this.guild, { track: { encoded: null } });
     } catch (error) {
       this.endIntent = null;
-      if (removed.length) this.queue.unshift(...removed);
       throw error;
     }
     return this;
@@ -1293,6 +1302,7 @@ var Player = class _Player {
   }
   /** @internal */
   handleTrackStart(payload) {
+    this.endIntent = null;
     this.playing = !this.paused;
     const track = this.current ?? buildTrack(payload.track);
     this.manager.emit("trackStart", this, track, payload);
@@ -1300,13 +1310,16 @@ var Player = class _Player {
   /** @internal */
   async handleTrackEnd(payload) {
     const track = this.current ?? buildTrack(payload.track);
-    this.manager.emit("trackEnd", this, track, payload);
     const pending = this.endIntent;
-    const matchesIntent = pending !== null && pending.encoded !== null && pending.encoded === payload.track.encoded;
-    const intent = matchesIntent ? pending.type : null;
-    if (matchesIntent) this.endIntent = null;
+    let intent = null;
+    if (pending) {
+      const stillOwned = this.current === null || pending.encoded === null || this.current.encoded === pending.encoded;
+      this.endIntent = null;
+      if (stillOwned) intent = pending.type;
+    }
+    this.manager.emit("trackEnd", this, track, payload, { intent });
     if (payload.reason === "replaced" || payload.reason === "cleanup") return;
-    if (this.current && this.current.encoded !== payload.track.encoded) return;
+    if (!intent && this.current && this.current.encoded !== payload.track.encoded) return;
     if (payload.reason === "stopped" && intent === null) return;
     if (intent === "stop") {
       this.recordPrevious(track);
@@ -1400,9 +1413,14 @@ var Player = class _Player {
       return;
     }
     this.voiceReconnectAttempts++;
-    const delay = (this.manager.options.voiceReconnectDelay ?? 1e3) * this.voiceReconnectAttempts;
+    const baseDelay = this.manager.options.voiceReconnectDelay ?? 1e3;
+    const immediate = payload.code === 4006 || payload.code === 4009;
+    const delay = immediate ? 0 : baseDelay * this.voiceReconnectAttempts;
     this.state = "RESUMING";
-    this.manager.emit("debug", `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries} in ${delay}ms.`);
+    this.manager.emit(
+      "debug",
+      `[Player ${this.guild}] Voice closed (${payload.code}); reconnect ${this.voiceReconnectAttempts}/${maxTries}${delay ? ` in ${delay}ms` : " immediately"}.`
+    );
     this.voiceReconnectPending = true;
     try {
       await sleep(delay);
@@ -1986,44 +2004,114 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
           if (replay && existing.node === node) await existing.restoreNodeState();
           continue;
         }
-        const player = this.create({
-          guild: data.guild,
-          voiceChannel: typeof data.voiceChannel === "string" ? data.voiceChannel : void 0,
-          textChannel: typeof data.textChannel === "string" ? data.textChannel : void 0,
-          node: node.id,
-          volume: typeof data.volume === "number" && Number.isFinite(data.volume) ? data.volume : void 0,
-          data: typeof data.data === "object" && data.data !== null ? data.data : void 0
-        });
-        if (data.repeatMode === 0 || data.repeatMode === 1 || data.repeatMode === 2) {
-          player.repeatMode = data.repeatMode;
-        }
-        player.autoplay = data.autoplay === true;
-        if (data.filters && typeof data.filters === "object") player.filters.load(data.filters);
-        if (Array.isArray(data.queue)) {
-          const restored = data.queue.map((item) => this.restoreQueueItem(item)).filter((item) => item !== null);
-          player.queue.add(restored);
-        }
-        const current = this.restoreQueueItem(data.current);
-        if (current && "encoded" in current) player.queue.current = current;
-        if (Array.isArray(data.previous)) {
-          player.queue.previous = data.previous.map((item) => this.restoreQueueItem(item)).filter((item) => item !== null && "encoded" in item);
-        }
+        const player = this.hydratePlayerFromStore(node, data);
+        if (!player) continue;
         if (!replay) {
           player.paused = data.paused === true;
           player.playing = player.queue.current !== null && !player.paused;
         }
         player.connect();
         if (replay && player.queue.current) {
-          const current2 = player.queue.current;
+          const current = player.queue.current;
           const saved = typeof data.position === "number" ? data.position : 0;
-          const startTime = current2.isStream ? 0 : Math.max(0, Math.min(saved, current2.duration || saved));
-          await player.play({ track: current2, startTime, paused: data.paused === true });
+          const startTime = current.isStream ? 0 : Math.max(0, Math.min(saved, current.duration || saved));
+          await player.play({ track: current, startTime, paused: data.paused === true });
         }
         this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
       } catch (error) {
         this.emit("debug", `[Moodenglink] Ignored malformed persisted player "${key}": ${error.message}`);
       }
     }
+  }
+  /**
+   * Reattach local players after a *resumed* Lavalink session (e.g. full process
+   * restart while the node kept the session alive).
+   *
+   * Fetches live players from the node, recreates missing local Players from the
+   * store + live state, calls `connect()` only (no `play()` / seek), and never
+   * restores stale Discord voice credentials from the store.
+   *
+   * Seamless here means no Lavalink play/seek restart — Discord voice still needs
+   * a fresh OP4 rebind after a process kill (audio gap is possible).
+   */
+  async syncResumedPlayers(node) {
+    const store = this.options.store;
+    if (!store) {
+      this.emit("nodeResume", node, 0);
+      return 0;
+    }
+    let live;
+    try {
+      live = await node.rest.getPlayers();
+    } catch (error) {
+      this.emit("nodeError", node, error);
+      this.emit("nodeResume", node, 0);
+      return 0;
+    }
+    let count = 0;
+    for (const livePlayer of live) {
+      if (this.players.has(livePlayer.guildId)) continue;
+      const key = `moodenglink:player:${livePlayer.guildId}`;
+      let raw;
+      try {
+        raw = await Promise.resolve(store.get(key));
+      } catch (error) {
+        this.emit("storeError", error, "get", key);
+        continue;
+      }
+      if (!raw) continue;
+      try {
+        const data = JSON.parse(raw);
+        if (typeof data.guild !== "string" || typeof data.voiceChannel !== "string") continue;
+        const player = this.hydratePlayerFromStore(node, data);
+        if (!player) continue;
+        if (livePlayer.filters) player.filters.load(livePlayer.filters);
+        if (typeof livePlayer.volume === "number") {
+          player.volume = livePlayer.volume;
+          player.filters.volume = livePlayer.volume / 100;
+        }
+        player.paused = livePlayer.paused === true;
+        player.position = livePlayer.state?.position ?? 0;
+        if (livePlayer.track) {
+          player.queue.current = buildTrack(livePlayer.track);
+        }
+        player.playing = player.queue.current !== null && !player.paused;
+        player.state = "RESUMING";
+        player.connect();
+        count++;
+        this.emit("debug", `[Moodenglink] Synced resumed player for guild ${livePlayer.guildId}.`);
+      } catch (error) {
+        this.emit("debug", `[Moodenglink] Ignored resumed player "${livePlayer.guildId}": ${error.message}`);
+      }
+    }
+    this.emit("nodeResume", node, count);
+    return count;
+  }
+  hydratePlayerFromStore(node, data) {
+    if (typeof data.guild !== "string" || !data.guild) return null;
+    const player = this.create({
+      guild: data.guild,
+      voiceChannel: typeof data.voiceChannel === "string" ? data.voiceChannel : void 0,
+      textChannel: typeof data.textChannel === "string" ? data.textChannel : void 0,
+      node: node.id,
+      volume: typeof data.volume === "number" && Number.isFinite(data.volume) ? data.volume : void 0,
+      data: typeof data.data === "object" && data.data !== null ? data.data : void 0
+    });
+    if (data.repeatMode === 0 || data.repeatMode === 1 || data.repeatMode === 2) {
+      player.repeatMode = data.repeatMode;
+    }
+    player.autoplay = data.autoplay === true;
+    if (data.filters && typeof data.filters === "object") player.filters.load(data.filters);
+    if (Array.isArray(data.queue)) {
+      const restored = data.queue.map((item) => this.restoreQueueItem(item)).filter((item) => item !== null);
+      player.queue.add(restored);
+    }
+    const current = this.restoreQueueItem(data.current);
+    if (current && "encoded" in current) player.queue.current = current;
+    if (Array.isArray(data.previous)) {
+      player.queue.previous = data.previous.map((item) => this.restoreQueueItem(item)).filter((item) => item !== null && "encoded" in item);
+    }
+    return player;
   }
   restoreQueueItem(value) {
     if (!value || typeof value !== "object") return null;

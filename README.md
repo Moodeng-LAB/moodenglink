@@ -120,7 +120,7 @@ individual `create`, `search`, queue and `play` APIs.
 | `autoMove`              | `boolean`                                   | `true`          | Migrate players to a healthy node when one dies.              |
 | `autoResume`            | `boolean`                                   | `false`         | Restore players from `store` on a cold node session.          |
 | `voiceReconnectTries`   | `number`                                    | `3`             | Max voice re-join attempts after a recoverable close.         |
-| `voiceReconnectDelay`   | `number`                                    | `1000`          | Base backoff (ms) between voice re-join attempts.             |
+| `voiceReconnectDelay`   | `number`                                    | `1000`          | Base backoff (ms); `4006`/`4009` reconnect immediately. Set `0` for always-immediate. |
 | `defaultSearchPlatform` | `SearchPlatform`                            | `"youtube"`     | Default source for prefix-less queries.                       |
 | `trackPartial`          | `(keyof Track)[]`                           | `[]`            | Fields to strip from tracks (never removes `encoded`).        |
 | `store`                 | `SessionStore`                              | —               | Backend for persistence/resume (Redis, Map…).                 |
@@ -334,8 +334,13 @@ node.validateCapabilities();
 
 Dropped voice connections (close codes `4006`, `4009`, `4014`, `4015`, `1006`)
 recover automatically: the player re-joins with a backing-off delay up to
-`voiceReconnectTries` times. The counter resets once voice is healthy, and an
-intentional `disconnect()`/`destroy()` is never fought.
+`voiceReconnectTries` times. Codes `4006`/`4009` (common after a process restart)
+reconnect **immediately**. Set `voiceReconnectDelay: 0` if you want every
+recoverable close to rebind without backoff. The counter resets once voice is
+healthy, and an intentional `disconnect()`/`destroy()` is never fought.
+
+Moodenglink never leave→joins (channel_id `null` then rejoin) for recovery —
+it only re-sends OP4 for the same channel.
 
 > **DAVE (voice E2EE):** nothing to configure. Discord's DAVE encryption lives on
 > the voice transport owned by the **Lavalink node**, not this wrapper — and
@@ -349,6 +354,15 @@ intentional `disconnect()`/`destroy()` is never fought.
 Players are serialised on state changes and restored when a node comes up on a
 **cold** session (`autoResume: true`) — a transient reconnect that the node
 resumes is left playing, never restarted.
+
+When `ready.resumed === true` after a **full process restart**, Moodenglink
+calls `syncResumedPlayers(node)`: it fetches live players from Lavalink,
+recreates missing local Players from the store + live state, and `connect()`s
+only — no `play()` / seek. Stale Discord voice credentials from the store are
+never restored.
+
+**Seamless** means no Lavalink play/seek restart. A process kill still needs a
+fresh Discord OP4 / voice rebind (`4006` is expected); an audio gap is possible.
 
 Position, pause state, filters, user data, node assignment and unresolved queue
 items are restored. Writes are ordered per player, and `RedisStore` uses SCAN
@@ -446,7 +460,8 @@ Extendable: `Player`, `Queue`, `Node`, `Filters`.
 | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
 | `nodeCreate` · `nodeConnect` · `nodeReconnect` · `nodeDisconnect` · `nodeError` · `nodeDestroy` · `nodeStats` · `nodeRaw` · `nodeCapabilityMismatch` | node lifecycle |
 | `playerCreate` · `playerDestroy` · `playerMove` · `playerDisconnect` · `playerStateUpdate`                                | player lifecycle               |
-| `trackStart` · `trackEnd` · `trackStuck` · `trackError`                                                                   | `(player, track, payload)`     |
+| `trackStart` · `trackEnd` · `trackStuck` · `trackError`                                                                   | `(player, track, payload[, context])` — `trackEnd` context has `{ intent: "skip" \| "stop" \| null }` |
+| `nodeResume`                                                                                                              | `(node, count)` synced after a resumed session |
 | `queueEnd`                                                                                                                | `(player, lastTrack, payload)` |
 | `socketClosed`                                                                                                            | `(player, payload)`            |
 | `lyricsFound` · `lyricsLine` · `lyricsNotFound`                                                                           | `(player, …, payload)`         |

@@ -227,8 +227,14 @@ export class Node {
 		// Only restore from the store on a *cold* session. When `resumed` is true the
 		// node kept our previous session alive and is still playing, so replaying
 		// from the persisted position would restart/jump every live track.
-		if (this.manager.options.autoResume && (!payload.resumed || ![...this.manager.players.values()].some((player) => player.node === this))) {
-			await this.manager.resumePlayers(this, !payload.resumed).catch(() => null);
+		// After a full process restart local players are empty — sync them from the
+		// live Lavalink session (connect only, no play/seek).
+		if (this.manager.options.autoResume) {
+			if (payload.resumed) {
+				await this.manager.syncResumedPlayers(this).catch(() => null);
+			} else {
+				await this.manager.resumePlayers(this, true).catch(() => null);
+			}
 		}
 	}
 

@@ -123,6 +123,33 @@ describe("Node", () => {
 	});
 
 	it("reconciles persisted players when Lavalink resumed but local state is empty", async () => {
+		const syncResumedPlayers = vi.fn().mockResolvedValue(0);
+		const manager = {
+			emit: vi.fn(),
+			options: { clientId: "bot", autoResume: true },
+			players: new Map(),
+			nodes: new Map(),
+			syncResumedPlayers,
+		} as unknown as Moodenglink;
+		const node = new Node(manager, { host: "h" });
+		const socket = { readyState: 1 } as never;
+		node.socket = socket;
+		vi.spyOn(node.rest, "updateSession").mockResolvedValue({ resuming: true, timeout: 60 });
+		vi.spyOn(node.rest, "getInfo").mockResolvedValue({
+			sourceManagers: [],
+			filters: [],
+			plugins: [],
+		} as never);
+
+		await (node as unknown as { handleReady(socket: unknown, payload: { sessionId: string; resumed: boolean }): Promise<void> }).handleReady(socket, {
+			sessionId: "session",
+			resumed: true,
+		});
+
+		expect(syncResumedPlayers).toHaveBeenCalledWith(node);
+	});
+
+	it("cold-resumes from the store when the session is not resumed", async () => {
 		const resumePlayers = vi.fn().mockResolvedValue(undefined);
 		const manager = {
 			emit: vi.fn(),
@@ -143,9 +170,9 @@ describe("Node", () => {
 
 		await (node as unknown as { handleReady(socket: unknown, payload: { sessionId: string; resumed: boolean }): Promise<void> }).handleReady(socket, {
 			sessionId: "session",
-			resumed: true,
+			resumed: false,
 		});
 
-		expect(resumePlayers).toHaveBeenCalledWith(node, false);
+		expect(resumePlayers).toHaveBeenCalledWith(node, true);
 	});
 });

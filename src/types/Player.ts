@@ -30,6 +30,17 @@ export interface PlayerDestroyContext {
 	disconnected: boolean;
 }
 
+/**
+ * Why Moodenglink ended the current track, when we caused it.
+ * Lavalink reports both `stop()` and `skip()` as TrackEnd reason `"stopped"`.
+ */
+export type TrackEndIntent = "stop" | "skip" | null;
+
+/** Extra context on `trackEnd` so bots can log skip vs stop correctly. */
+export interface TrackEndContext {
+	intent: TrackEndIntent;
+}
+
 export interface PlayerOptions {
 	/** The guild the player belongs to. */
 	guild: string;

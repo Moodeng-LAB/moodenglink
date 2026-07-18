@@ -128,10 +128,54 @@ describe("Player.handleTrackEnd — repeat modes", () => {
 		player.queue.current = track("t1");
 		player.queue.add(track("t2"));
 
-		await player.skip(); // sets the skip intent, ends the track
-		await player.handleTrackEnd(endEvent("stopped"));
+		await player.skip(); // replaces via play(); TrackEnd "replaced" is ignored
 
 		expect(player.current?.encoded).toBe("t2"); // advanced, did not replay t1
+	});
+
+	it("advances on skip even when TrackEnd encoded differs from the client copy (LavaSrc)", async () => {
+		const { player, update } = ctx;
+		player.queue.current = track("client-enc");
+		player.queue.add(track("t2"));
+		// Force the legacy null-track skip path by emptying after we set intent...
+		// With the play()-based skip, advancement must not depend on encoded match.
+		await player.skip();
+
+		expect(player.current?.encoded).toBe("t2");
+		expect(update).toHaveBeenCalledWith(
+			"g1",
+			expect.objectContaining({ track: expect.objectContaining({ encoded: "t2" }) }),
+			false,
+		);
+	});
+
+	it("emits trackEnd context.intent for stop vs natural finish", async () => {
+		const { manager, player } = ctx;
+		const ends: Array<{ intent: string | null }> = [];
+		manager.on("trackEnd", (_p, _t, _payload, context) => ends.push(context));
+
+		player.queue.current = track("t1");
+		await player.handleTrackEnd(endEvent("finished"));
+		expect(ends.at(-1)?.intent).toBeNull();
+
+		player.queue.current = track("t2");
+		await player.stop(false);
+		await player.handleTrackEnd(endEvent("stopped", "DIFFERENT-ENCODED"));
+		expect(ends.at(-1)?.intent).toBe("stop");
+		expect(player.playing).toBe(false);
+	});
+
+	it("empty-queue skip still advances when TrackEnd encoded differs (LavaSrc)", async () => {
+		const { manager, player } = ctx;
+		const queueEnd = vi.fn();
+		manager.on("queueEnd", queueEnd);
+		player.queue.current = track("client-enc");
+
+		await player.skip();
+		await player.handleTrackEnd(endEvent("stopped", "lava-src-rewritten-enc"));
+
+		expect(queueEnd).toHaveBeenCalledOnce();
+		expect(player.current).toBeNull();
 	});
 
 	it("does NOT repeat on a load failure — it advances instead", async () => {
@@ -347,21 +391,16 @@ describe("Player command transactions", () => {
 		expect(player.queue.map((item) => item.encoded)).toEqual(["t1"]);
 	});
 
-	it("removes skipped items before the TrackEnd race", async () => {
-		const { player, update } = build();
+	it("removes skipped items before playing the target track", async () => {
+		const { player } = build();
 		player.queue.current = track("t1");
 		player.queue.add([track("t2"), track("t3"), track("t4")]);
-		update.mockImplementation(async (_guild, body) => {
-			if ((body as { track?: { encoded?: string | null } }).track?.encoded === null) {
-				await player.handleTrackEnd(endEvent("stopped", "t1"));
-			}
-			return {} as never;
-		});
 
 		await player.skip(3);
 
 		expect(player.current?.encoded).toBe("t4");
 		expect(player.queue).toHaveLength(0);
+		expect(player.queue.previous[0]?.encoded).toBe("t1");
 	});
 
 	it("clears before a synchronous stop TrackEnd and emits queueEnd once", async () => {

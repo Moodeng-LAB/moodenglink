@@ -111,7 +111,11 @@ export interface ManagerOptions {
 	autoResume?: boolean;
 	/** How many times to try re-establishing a dropped voice connection. Defaults to `3`. */
 	voiceReconnectTries?: number;
-	/** Base delay (ms) between voice reconnect attempts; scales per attempt. Defaults to `1000`. */
+	/**
+	 * Base delay (ms) between voice reconnect attempts; scales per attempt. Defaults to `1000`.
+	 * Codes `4006`/`4009` (common after process restart) reconnect immediately.
+	 * Set to `0` for immediate reconnect on every recoverable close. Never leave→joins.
+	 */
 	voiceReconnectDelay?: number;
 	/** The default platform used when a search query has no source prefix. */
 	defaultSearchPlatform?: SearchPlatform;
@@ -165,10 +169,12 @@ export interface ManagerEvents {
 
 	queueEnd: [player: Player, track: Track | null, payload: TrackEndEvent];
 	trackStart: [player: Player, track: Track, payload: TrackStartEvent];
-	trackEnd: [player: Player, track: Track, payload: TrackEndEvent];
+	trackEnd: [player: Player, track: Track, payload: TrackEndEvent, context: import("./Player").TrackEndContext];
 	trackStuck: [player: Player, track: Track, payload: TrackStuckEvent];
 	trackError: [player: Player, track: Track, payload: TrackExceptionEvent];
 	socketClosed: [player: Player, payload: WebSocketClosedEvent];
+	/** Emitted after {@link Moodenglink.syncResumedPlayers} reattaches local players. */
+	nodeResume: [node: Node, count: number];
 
 	lyricsFound: [player: Player, lyrics: LyricsResult, payload: LyricsFoundEvent];
 	lyricsNotFound: [player: Player, payload: LyricsNotFoundEvent];
