@@ -281,7 +281,7 @@ async function resolveAutoplayCandidates(manager, previous, requester) {
 }
 
 // package.json
-var version = "1.7.0";
+var version = "1.7.1";
 
 // src/utils/equalizers.ts
 var bands = (gains) => gains.map((gain, band) => ({ band, gain }));
