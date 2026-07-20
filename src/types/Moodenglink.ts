@@ -7,7 +7,7 @@ import type { Collection } from "@discordjs/collection";
 import type { Node } from "../classes/Node";
 import type { Player } from "../classes/Player";
 import type { NodeCapabilityReport, NodeOptions, NodeStats } from "./Node";
-import type { PlayerDestroyContext, PlayerOptions, Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
+import type { PlayerDestroyContext, PlayerOptions, Requester, Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
 import type { SearchPlatform } from "../utils/sources";
 import type {
 	ChapterStartedEvent,
@@ -69,7 +69,7 @@ export interface PlayerBehaviorOptions {
 /** One-call search, queue and play helper intended for small bots and first-time users. */
 export interface QuickPlayOptions extends PlayerOptions {
 	query: string | SearchQuery;
-	requester?: unknown;
+	requester?: Requester;
 	/** Add all search results instead of only the first. Playlists are always added in full. */
 	addAll?: boolean;
 }
@@ -104,7 +104,7 @@ export interface ManagerOptions {
 	 * requested the previous track. When omitted, the previous track's requester
 	 * is inherited (backwards-compatible behaviour).
 	 */
-	autoplayRequester?: unknown;
+	autoplayRequester?: Requester;
 	/** Whether to migrate players to a healthy node when one dies. Defaults to `true`. */
 	autoMove?: boolean;
 	/** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */

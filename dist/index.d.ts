@@ -14,6 +14,31 @@ declare enum RepeatMode {
     TRACK = 1,
     QUEUE = 2
 }
+/**
+ * Augmentable map that pins the shape of `requester` across Moodenglink.
+ *
+ * By default `requester` is typed as `unknown`, so you must cast on every read.
+ * Pin it once — anywhere in your app's type space — via declaration merging and
+ * every `track.requester`, event payload, and `search()` call is typed with no
+ * casts:
+ *
+ * ```ts
+ * declare module "moodenglink" {
+ *   interface RequesterTypes {
+ *     requester: { id: string; username: string };
+ *   }
+ * }
+ * ```
+ */
+interface RequesterTypes {
+}
+/**
+ * The resolved requester type: whatever {@link RequesterTypes} pins it to, or
+ * `unknown` when the consumer hasn't merged a shape in.
+ */
+type Requester = RequesterTypes extends {
+    requester: infer R;
+} ? R : unknown;
 /** Stable machine-readable reason attached to the `playerDestroy` event. */
 type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable";
 /** Options for {@link Player.destroy}. Passing a boolean remains supported for v1 compatibility. */
@@ -96,7 +121,7 @@ interface Track {
     /** User data persisted with the track on the node. */
     userData: Record<string, unknown>;
     /** Whoever requested the track — set by you at search/add time. */
-    requester?: unknown;
+    requester?: Requester;
 }
 /** A track that has not yet been resolved into a playable {@link Track}. */
 interface UnresolvedQuery {
@@ -105,7 +130,7 @@ interface UnresolvedQuery {
     duration?: number;
     uri?: string;
     source?: string;
-    requester?: unknown;
+    requester?: Requester;
 }
 /**
  * A queue item that carries only search hints (title/author/…) and is resolved
@@ -124,7 +149,7 @@ interface UnresolvedTrack {
     artworkUrl?: string | null;
     pluginInfo?: Record<string, unknown>;
     userData?: Record<string, unknown>;
-    requester?: unknown;
+    requester?: Requester;
     /** Resolves this into a playable {@link Track} (throws if nothing matches). */
     resolve(): Promise<Track>;
 }
@@ -136,7 +161,7 @@ interface QueueQuery {
     author?: string | RegExp;
     uri?: string | RegExp;
     sourceName?: string | RegExp;
-    requester?: unknown;
+    requester?: Requester;
     minDuration?: number;
     maxDuration?: number;
     predicate?: (track: QueueItem, index: number) => boolean;
@@ -1035,7 +1060,7 @@ interface PlayerBehaviorOptions {
 /** One-call search, queue and play helper intended for small bots and first-time users. */
 interface QuickPlayOptions extends PlayerOptions {
     query: string | SearchQuery;
-    requester?: unknown;
+    requester?: Requester;
     /** Add all search results instead of only the first. Playlists are always added in full. */
     addAll?: boolean;
 }
@@ -1068,7 +1093,7 @@ interface ManagerOptions {
      * requested the previous track. When omitted, the previous track's requester
      * is inherited (backwards-compatible behaviour).
      */
-    autoplayRequester?: unknown;
+    autoplayRequester?: Requester;
     /** Whether to migrate players to a healthy node when one dies. Defaults to `true`. */
     autoMove?: boolean;
     /** Whether to resume players from a {@link SessionStore} on start. Defaults to `false`. */
@@ -1222,7 +1247,7 @@ declare class Moodenglink extends EventEmitter {
      * Resolves a query into playable tracks via a node's `loadtracks` endpoint.
      * Accepts a raw string or a `{ query, source }` object.
      */
-    search(query: string | SearchQuery, requester?: unknown): Promise<SearchResult>;
+    search(query: string | SearchQuery, requester?: Requester): Promise<SearchResult>;
     /**
      * Searches, creates/joins a player, queues results and starts playback.
      * Intended as a small-bot convenience; every lower-level API remains available.
@@ -1231,7 +1256,7 @@ declare class Moodenglink extends EventEmitter {
     private assertSearchAllowed;
     private resolveLoadResult;
     /** Decodes a base64 track back into a {@link Track}. */
-    decodeTrack(encoded: string, requester?: unknown): Promise<Track>;
+    decodeTrack(encoded: string, requester?: Requester): Promise<Track>;
     /**
      * @internal Queues a related track when a queue ends (best-effort).
      *
@@ -1379,7 +1404,7 @@ declare function leastUsedNode(nodes: Collection<string, Node>): Collection<stri
  */
 
 /** Builds a flattened {@link Track} from raw Lavalink track data. */
-declare function buildTrack(data: TrackData, requester?: unknown): Track;
+declare function buildTrack(data: TrackData, requester?: Requester): Track;
 /** Removes the given fields from a track (used by `trackPartial`). */
 declare function partialTrack(track: Track, partial: (keyof Track)[]): Track;
 /** Type-guard that a value is a plain object. */
@@ -1435,4 +1460,4 @@ declare class TTLCache<K, V> {
 
 var version = "1.7.1";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndContext, type TrackEndEvent, type TrackEndIntent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, type Requester, type RequesterTypes, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndContext, type TrackEndEvent, type TrackEndIntent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
