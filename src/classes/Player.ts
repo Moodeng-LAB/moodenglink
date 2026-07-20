@@ -578,8 +578,7 @@ export class Player {
 		const pending = this.endIntent;
 		let intent: "stop" | "skip" | null = null;
 		if (pending) {
-			const stillOwned =
-				this.current === null || pending.encoded === null || this.current.encoded === pending.encoded;
+			const stillOwned = this.current === null || pending.encoded === null || this.current.encoded === pending.encoded;
 			this.endIntent = null;
 			if (stillOwned) intent = pending.type;
 		}

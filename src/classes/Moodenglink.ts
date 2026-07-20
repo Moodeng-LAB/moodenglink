@@ -9,6 +9,7 @@ import type { ManagerEvents, ManagerOptions, ManagerPreset, QuickPlayOptions, Qu
 import type {
 	LoadType,
 	PlaylistInfo,
+	Requester,
 	SearchResult,
 	Track,
 	TrackData,
@@ -257,7 +258,7 @@ export class Moodenglink extends EventEmitter {
 	 * Resolves a query into playable tracks via a node's `loadtracks` endpoint.
 	 * Accepts a raw string or a `{ query, source }` object.
 	 */
-	public async search(query: string | SearchQuery, requester?: unknown): Promise<SearchResult> {
+	public async search(query: string | SearchQuery, requester?: Requester): Promise<SearchResult> {
 		const raw = typeof query === "string" ? query : query.query;
 		this.assertSearchAllowed(raw);
 		const node = this.searchNode();
@@ -351,7 +352,7 @@ export class Moodenglink extends EventEmitter {
 		}
 	}
 
-	private resolveLoadResult(res: { loadType: LoadType; data: unknown }, requester?: unknown): SearchResult {
+	private resolveLoadResult(res: { loadType: LoadType; data: unknown }, requester?: Requester): SearchResult {
 		const result: SearchResult = { loadType: res.loadType, tracks: [], playlist: null, exception: null };
 		const make = (data: TrackData) => partialTrack(buildTrack(data, requester), this.options.trackPartial ?? []);
 
@@ -384,7 +385,7 @@ export class Moodenglink extends EventEmitter {
 	}
 
 	/** Decodes a base64 track back into a {@link Track}. */
-	public async decodeTrack(encoded: string, requester?: unknown): Promise<Track> {
+	public async decodeTrack(encoded: string, requester?: Requester): Promise<Track> {
 		const node = this.searchNode();
 		const data = (await node.rest.decodeTrack(encoded)) as TrackData;
 		return buildTrack(data, requester);
@@ -654,9 +655,7 @@ export class Moodenglink extends EventEmitter {
 		const current = this.restoreQueueItem(data.current);
 		if (current && "encoded" in current) player.queue.current = current;
 		if (Array.isArray(data.previous)) {
-			player.queue.previous = data.previous
-				.map((item) => this.restoreQueueItem(item))
-				.filter((item): item is Track => item !== null && "encoded" in item);
+			player.queue.previous = data.previous.map((item) => this.restoreQueueItem(item)).filter((item): item is Track => item !== null && "encoded" in item);
 		}
 		// Never restore voiceState from the store — Discord tokens/endpoints expire.
 		return player;

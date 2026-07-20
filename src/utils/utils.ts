@@ -3,10 +3,10 @@
  * @module utils/utils
  */
 
-import type { QueueItem, Track, TrackData, UnresolvedTrack } from "../types/Player";
+import type { QueueItem, Requester, Track, TrackData, UnresolvedTrack } from "../types/Player";
 
 /** Builds a flattened {@link Track} from raw Lavalink track data. */
-export function buildTrack(data: TrackData, requester?: unknown): Track {
+export function buildTrack(data: TrackData, requester?: Requester): Track {
 	const { info } = data;
 	return {
 		encoded: data.encoded,

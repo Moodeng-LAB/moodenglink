@@ -11,7 +11,7 @@
 
 import type { Moodenglink } from "../classes/Moodenglink";
 import type { SearchQuery } from "../types/Moodenglink";
-import type { Track } from "../types/Player";
+import type { Requester, Track } from "../types/Player";
 import type { SearchPlatform } from "./sources";
 import { buildAutoplaySeed } from "./utils";
 
@@ -24,9 +24,9 @@ export function trackKeys(track: { identifier?: string; uri?: string | null }): 
 }
 
 /** A single recommendation source. Must never throw — return `[]` on failure. */
-type Strategy = (manager: Moodenglink, previous: Track, requester: unknown) => Promise<Track[]>;
+type Strategy = (manager: Moodenglink, previous: Track, requester: Requester) => Promise<Track[]>;
 
-const search = async (manager: Moodenglink, query: SearchQuery, requester: unknown): Promise<Track[]> => {
+const search = async (manager: Moodenglink, query: SearchQuery, requester: Requester): Promise<Track[]> => {
 	const res = await manager.search(query, requester).catch(() => null);
 	return res?.tracks ?? [];
 };
@@ -90,7 +90,7 @@ function strategyChain(source: string): Strategy[] {
  * platform-appropriate strategy in turn and returning the first non-empty set.
  * Never throws.
  */
-export async function resolveAutoplayCandidates(manager: Moodenglink, previous: Track, requester: unknown): Promise<Track[]> {
+export async function resolveAutoplayCandidates(manager: Moodenglink, previous: Track, requester: Requester): Promise<Track[]> {
 	const source = (previous.sourceName ?? "").toLowerCase();
 	for (const strategy of strategyChain(source)) {
 		const tracks = await strategy(manager, previous, requester).catch(() => []);

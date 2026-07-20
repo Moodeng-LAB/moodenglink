@@ -39,6 +39,7 @@ npm install moodenglink
 ## Contents
 
 [Quick start](#-quick-start-discordjs-v14) ·
+[Typing requester](#typing-the-requester) ·
 [Options](#-manager-options) ·
 [Nodes](#-node-options) ·
 [Player & Queue](#-player--queue) ·
@@ -102,6 +103,29 @@ For beginner-friendly recovery and caching defaults, construct with
 `Moodenglink.simple({ nodes, send })`. Advanced users can keep using the
 individual `create`, `search`, queue and `play` APIs.
 
+### Typing the `requester`
+
+By default `track.requester` is `unknown`, so reading it forces a cast on every
+access. Pin its shape **once** — anywhere in your app's type space — via
+declaration merging, and every `track.requester`, event payload and `search()`
+call is typed with zero casts:
+
+```ts
+declare module "moodenglink" {
+	interface RequesterTypes {
+		requester: { id: string; username: string };
+	}
+}
+
+manager.on("trackStart", (player, track) => {
+	// track.requester is { id: string; username: string } | undefined — no cast
+	console.log(`Requested by ${track.requester?.username}`);
+});
+```
+
+Merging is fully opt-in and backwards-compatible: leave `RequesterTypes`
+untouched and `requester` stays `unknown` exactly as before.
+
 ---
 
 ## ⚙️ Manager options
@@ -116,7 +140,7 @@ individual `create`, `search`, queue and `play` APIs.
 | `preset`                | `"minimal" \| "recommended" \| "resilient"` | —               | Additive deployment defaults; omitted preserves v1 behavior.  |
 | `autoPlay`              | `boolean`                                   | `false`         | Autoplay related tracks (platform radio/recs) at queue end.   |
 | `autoplaySampleSize`    | `number`                                    | `5`             | How many top autoplay candidates to sample for variety.       |
-| `autoplayRequester`     | `unknown`                                   | _(inherits)_    | `requester` stamped on autoplayed tracks (e.g. the bot user). |
+| `autoplayRequester`     | `Requester`                                 | _(inherits)_    | `requester` stamped on autoplayed tracks (e.g. the bot user). |
 | `autoMove`              | `boolean`                                   | `true`          | Migrate players to a healthy node when one dies.              |
 | `autoResume`            | `boolean`                                   | `false`         | Restore players from `store` on a cold node session.          |
 | `voiceReconnectTries`   | `number`                                    | `3`             | Max voice re-join attempts after a recoverable close.         |

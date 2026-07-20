@@ -13,6 +13,30 @@ export enum RepeatMode {
 	QUEUE = 2,
 }
 
+/**
+ * Augmentable map that pins the shape of `requester` across Moodenglink.
+ *
+ * By default `requester` is typed as `unknown`, so you must cast on every read.
+ * Pin it once — anywhere in your app's type space — via declaration merging and
+ * every `track.requester`, event payload, and `search()` call is typed with no
+ * casts:
+ *
+ * ```ts
+ * declare module "moodenglink" {
+ *   interface RequesterTypes {
+ *     requester: { id: string; username: string };
+ *   }
+ * }
+ * ```
+ */
+export interface RequesterTypes {}
+
+/**
+ * The resolved requester type: whatever {@link RequesterTypes} pins it to, or
+ * `unknown` when the consumer hasn't merged a shape in.
+ */
+export type Requester = RequesterTypes extends { requester: infer R } ? R : unknown;
+
 /** Stable machine-readable reason attached to the `playerDestroy` event. */
 export type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable";
 
@@ -103,7 +127,7 @@ export interface Track {
 	/** User data persisted with the track on the node. */
 	userData: Record<string, unknown>;
 	/** Whoever requested the track — set by you at search/add time. */
-	requester?: unknown;
+	requester?: Requester;
 }
 
 /** A track that has not yet been resolved into a playable {@link Track}. */
@@ -113,7 +137,7 @@ export interface UnresolvedQuery {
 	duration?: number;
 	uri?: string;
 	source?: string;
-	requester?: unknown;
+	requester?: Requester;
 }
 
 /**
@@ -133,7 +157,7 @@ export interface UnresolvedTrack {
 	artworkUrl?: string | null;
 	pluginInfo?: Record<string, unknown>;
 	userData?: Record<string, unknown>;
-	requester?: unknown;
+	requester?: Requester;
 	/** Resolves this into a playable {@link Track} (throws if nothing matches). */
 	resolve(): Promise<Track>;
 }
@@ -147,7 +171,7 @@ export interface QueueQuery {
 	author?: string | RegExp;
 	uri?: string | RegExp;
 	sourceName?: string | RegExp;
-	requester?: unknown;
+	requester?: Requester;
 	minDuration?: number;
 	maxDuration?: number;
 	predicate?: (track: QueueItem, index: number) => boolean;
