@@ -28,9 +28,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # `engines` in package.json requires >=18 — verify every LTS in range,
-        # not just the version the build/commit step happens to run on.
-        node-version: [18, 20, 22]
+        # `engines` in package.json still says >=18 for consumers (the published
+        # runtime doesn't touch anything newer), but the test toolchain itself
+        # can't run there: vitest 4's rolldown dependency imports `util.styleText`,
+        # added in Node 20. 18 is excluded here as a tooling limit, not a claim
+        # that the library dropped support for it.
+        node-version: [20, 22]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
