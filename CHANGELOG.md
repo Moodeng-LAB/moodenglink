@@ -1,5 +1,11 @@
 # moodenglink
 
+## 1.8.1
+
+### Patch Changes
+
+- bf185e8: Fix `Filters.setPreset()` assigning the shared `Equalizers[preset]` array by reference instead of cloning it — mutating `player.filters.equalizer` in place could corrupt the preset for every player process-wide. Presets are now cloned per-call and the `Equalizers` table itself is frozen as defense in depth.
+
 ## 1.8.0
 
 ### Minor Changes
