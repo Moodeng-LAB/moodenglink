@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Moodenglink } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
-import type { Player } from "../src/classes/Player";
 import { MemoryStore } from "../src/classes/stores";
 import { RepeatMode, type Track } from "../src/types/Player";
 import { EventTypes, type TrackEndEvent, type TrackEndReason } from "../src/types/Op";

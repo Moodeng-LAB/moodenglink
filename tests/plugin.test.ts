@@ -12,7 +12,19 @@ function manager() {
 	return new Moodenglink({ nodes: [{ host: "h", identifier: "n1" }], clientId: "bot", send: () => {} });
 }
 
+class BarePlugin extends Plugin {
+	readonly name = "bare-plugin";
+}
+
 describe("Plugin lifecycle", () => {
+	it("load()/unload() default to no-ops when a subclass doesn't override them", () => {
+		const m = manager();
+		const plugin = new BarePlugin();
+
+		expect(() => m.use(plugin)).not.toThrow();
+		expect(() => m.removePlugin(plugin)).not.toThrow();
+	});
+
 	it("use() loads a plugin once and ignores duplicates", () => {
 		const m = manager();
 		const plugin = new TestPlugin();

@@ -5,7 +5,10 @@
 
 import type { Band } from "../types/Filters";
 
-const bands = (gains: number[]): Band[] => gains.map((gain, band) => ({ band, gain }));
+// Frozen (band objects included) so a consumer mutating a preset in place — the
+// bug the shared reference in Filters.setPreset used to cause — fails loudly
+// instead of silently corrupting every player that uses the same preset.
+const bands = (gains: number[]): Band[] => Object.freeze(gains.map((gain, band) => Object.freeze({ band, gain }))) as Band[];
 
 export const Equalizers = {
 	flat: bands(new Array(15).fill(0)),
@@ -26,6 +29,8 @@ export const Equalizers = {
 
 	// Lavalink accepts band gains in the range -0.25 … 1.0.
 	radio: bands([0.65, 0.45, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0, -0.05, -0.1, -0.15, -0.2, -0.25, -0.25]),
-} satisfies Record<string, Band[]>;
+} as const satisfies Record<string, Band[]>;
+
+Object.freeze(Equalizers);
 
 export type EqualizerPreset = keyof typeof Equalizers;

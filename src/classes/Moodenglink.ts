@@ -5,7 +5,7 @@
 
 import { Collection } from "@discordjs/collection";
 import { EventEmitter } from "node:events";
-import type { ManagerEvents, ManagerOptions, ManagerPreset, QuickPlayOptions, QuickPlayResult, SearchPolicy, SearchQuery } from "../types/Moodenglink";
+import type { ManagerEvents, ManagerOptions, ManagerPreset, QuickPlayOptions, QuickPlayResult, SearchQuery } from "../types/Moodenglink";
 import type {
 	LoadType,
 	PlaylistInfo,
@@ -24,7 +24,6 @@ import type {
 } from "../types/Player";
 import type { FilterPayload } from "../types/Filters";
 import type { LavalinkPlayer } from "../types/Rest";
-import leastUsedNode from "../sorter/leastUsedNode";
 import { buildSearchIdentifier, type SearchPlatform } from "../utils/sources";
 import { TTLCache } from "../utils/cache";
 import { buildTrack, partialTrack, pickClosestTrack } from "../utils/utils";
@@ -35,7 +34,9 @@ import { Player } from "./Player";
 import { Structure } from "./Structure";
 import type { Plugin } from "./Plugin";
 
-// Strongly typed EventEmitter surface.
+// Strongly typed EventEmitter surface — class+interface merging is the
+// standard pattern for typing EventEmitter subclasses (also used by discord.js).
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export interface Moodenglink {
 	on<E extends keyof ManagerEvents>(event: E, listener: (...args: ManagerEvents[E]) => void): this;
 	once<E extends keyof ManagerEvents>(event: E, listener: (...args: ManagerEvents[E]) => void): this;
@@ -84,6 +85,7 @@ function domainMatches(hostname: string, rule: string): boolean {
 	return hostname === domain || hostname.endsWith(`.${domain}`);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- pairs with the interface above.
 export class Moodenglink extends EventEmitter {
 	public readonly options: ManagerOptions;
 	public readonly nodes = new Collection<string, Node>();
@@ -715,7 +717,6 @@ export class Moodenglink extends EventEmitter {
 	 * ideal for Spotify/Apple metadata that only YouTube/SoundCloud can stream.
 	 */
 	public buildUnresolved(query: UnresolvedQuery): UnresolvedTrack {
-		const manager = this;
 		const unresolved: UnresolvedTrack = {
 			unresolved: true,
 			title: query.title,
@@ -728,8 +729,10 @@ export class Moodenglink extends EventEmitter {
 			pluginInfo: {},
 			userData: {},
 			requester: query.requester,
-			async resolve(): Promise<Track> {
-				const track = await manager.resolve(query);
+			// Arrow function, not a method — closes over the outer `this` (the
+			// manager) instead of rebinding it to `unresolved`.
+			resolve: async (): Promise<Track> => {
+				const track = await this.resolve(query);
 				if (!track) throw new Error(`No playable match for "${query.title}".`);
 				track.requester = query.requester;
 				return track;

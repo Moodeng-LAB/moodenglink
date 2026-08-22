@@ -88,7 +88,9 @@ export class Filters {
 
 	/** Applies a named equalizer preset (`bass`, `pop`, `rock`, ...). */
 	public setPreset(preset: EqualizerPreset): this {
-		this.equalizer = Equalizers[preset];
+		// Copy — Equalizers[preset] is shared across every Filters instance, and
+		// `equalizer` is a public mutable array a consumer may edit in place.
+		this.equalizer = Equalizers[preset].map((band) => ({ ...band }));
 		return this;
 	}
 

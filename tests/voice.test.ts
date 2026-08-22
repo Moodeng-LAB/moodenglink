@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Moodenglink } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
-import type { Player } from "../src/classes/Player";
 import { EventTypes, type WebSocketClosedEvent } from "../src/types/Op";
 import { makeStats } from "./helpers";
 

@@ -7,7 +7,7 @@ import type { Collection } from "@discordjs/collection";
 import type { Node } from "../classes/Node";
 import type { Player } from "../classes/Player";
 import type { NodeCapabilityReport, NodeOptions, NodeStats } from "./Node";
-import type { PlayerDestroyContext, PlayerOptions, Requester, Track, UnresolvedQuery, VoiceGatewayPayload } from "./Player";
+import type { PlayerDestroyContext, PlayerOptions, Requester, Track, VoiceGatewayPayload } from "./Player";
 import type { SearchPlatform } from "../utils/sources";
 import type {
 	ChapterStartedEvent,

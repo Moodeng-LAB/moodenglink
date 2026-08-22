@@ -213,7 +213,7 @@ async function resolveAutoplayCandidates(manager, previous, requester) {
 var version = "1.8.0";
 
 // src/utils/equalizers.ts
-var bands = (gains) => gains.map((gain, band) => ({ band, gain }));
+var bands = (gains) => Object.freeze(gains.map((gain, band) => Object.freeze({ band, gain })));
 var Equalizers = {
   flat: bands(new Array(15).fill(0)),
   bass: bands([0.6, 0.67, 0.67, 0.4, 0.2, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
@@ -226,6 +226,7 @@ var Equalizers = {
   // Lavalink accepts band gains in the range -0.25 … 1.0.
   radio: bands([0.65, 0.45, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0, -0.05, -0.1, -0.15, -0.2, -0.25, -0.25])
 };
+Object.freeze(Equalizers);
 
 // src/classes/Filters.ts
 var Filters = class {
@@ -292,7 +293,7 @@ var Filters = class {
   }
   /** Applies a named equalizer preset (`bass`, `pop`, `rock`, ...). */
   setPreset(preset) {
-    this.equalizer = Equalizers[preset];
+    this.equalizer = Equalizers[preset].map((band) => ({ ...band }));
     return this;
   }
   setKaraoke(settings) {
@@ -2161,7 +2162,6 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
    * ideal for Spotify/Apple metadata that only YouTube/SoundCloud can stream.
    */
   buildUnresolved(query) {
-    const manager = this;
     const unresolved = {
       unresolved: true,
       title: query.title,
@@ -2174,8 +2174,10 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
       pluginInfo: {},
       userData: {},
       requester: query.requester,
-      async resolve() {
-        const track = await manager.resolve(query);
+      // Arrow function, not a method — closes over the outer `this` (the
+      // manager) instead of rebinding it to `unresolved`.
+      resolve: async () => {
+        const track = await this.resolve(query);
         if (!track) throw new Error(`No playable match for "${query.title}".`);
         track.requester = query.requester;
         return track;

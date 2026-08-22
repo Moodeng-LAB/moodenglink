@@ -753,15 +753,15 @@ declare class NodeCapabilityError extends Error {
  */
 
 declare const Equalizers: {
-    flat: Band[];
-    bass: Band[];
-    soft: Band[];
-    treble: Band[];
-    pop: Band[];
-    party: Band[];
-    rock: Band[];
-    electronic: Band[];
-    radio: Band[];
+    readonly flat: Band[];
+    readonly bass: Band[];
+    readonly soft: Band[];
+    readonly treble: Band[];
+    readonly pop: Band[];
+    readonly party: Band[];
+    readonly rock: Band[];
+    readonly electronic: Band[];
+    readonly radio: Band[];
 };
 type EqualizerPreset = keyof typeof Equalizers;
 

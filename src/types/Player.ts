@@ -29,6 +29,7 @@ export enum RepeatMode {
  * }
  * ```
  */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- deliberately empty: consumers augment it via declaration merging.
 export interface RequesterTypes {}
 
 /**
