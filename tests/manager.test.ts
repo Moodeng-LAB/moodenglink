@@ -3,7 +3,7 @@ import { Moodenglink, SearchPolicyError } from "../src/classes/Moodenglink";
 import type { Node } from "../src/classes/Node";
 import { Player } from "../src/classes/Player";
 import { MemoryStore } from "../src/classes/stores";
-import leastUsedNode from "../src/sorter/leastUsedNode";
+import leastLoadNode from "../src/sorter/leastLoadNode";
 import { makeStats, makeTrackData } from "./helpers";
 
 function buildManager(extra: Record<string, unknown> = {}) {
@@ -77,7 +77,12 @@ describe("Moodenglink.idealNode", () => {
 		expect(manager.idealNode.id).toBe("playable");
 	});
 
-	it("inline default selection matches leastUsedNode().first() across random stats/priorities", () => {
+	it("inline default selection matches leastLoadNode().first() across random stats/priorities", () => {
+		// Default selection scores by `node.penalties` (player count + CPU +
+		// frame-drop load, priority folded in) rather than raw playingPlayers —
+		// playingPlayers alone ignores CPU/frame load and, being sourced from
+		// Lavalink's periodic stats broadcast, tie-breaks to node insertion
+		// order between broadcasts instead of actually spreading load.
 		const nodes = Array.from({ length: 8 }, (_, i) => ({ host: `h${i}`, identifier: `n${i}`, priority: i % 3 }));
 		const manager = new Moodenglink({ nodes, clientId: "bot", send: () => {} });
 
@@ -93,7 +98,7 @@ describe("Moodenglink.idealNode", () => {
 				expect(() => manager.idealNode).toThrow();
 				continue;
 			}
-			const expected = leastUsedNode(connected).first();
+			const expected = leastLoadNode(connected).first();
 			expect(manager.idealNode).toBe(expected);
 		}
 	});

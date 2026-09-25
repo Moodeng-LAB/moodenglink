@@ -39,7 +39,7 @@ export interface RequesterTypes {}
 export type Requester = RequesterTypes extends { requester: infer R } ? R : unknown;
 
 /** Stable machine-readable reason attached to the `playerDestroy` event. */
-export type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable";
+export type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable" | "resume-failed";
 
 /** Options for {@link Player.destroy}. Passing a boolean remains supported for v1 compatibility. */
 export interface PlayerDestroyOptions {

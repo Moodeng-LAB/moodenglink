@@ -186,19 +186,22 @@ export class Moodenglink extends EventEmitter {
 		const sorter = this.options.sorter;
 		if (sorter) return sorter(this.nodes.filter((n) => n.connected && usable(n))).first();
 
-		// Default (leastUsedNode) selection inlined as an allocation-free O(n)
-		// min-scan: fewest playing players wins, ties broken by higher priority,
-		// then insertion order — identical to `filter().sort().first()`.
+		// Default selection inlined as an allocation-free O(n) min-scan over
+		// `node.penalties` — the composite player-count/CPU/frame-drop score
+		// (priority already folded in), instead of raw playingPlayers. Raw
+		// playingPlayers ignores CPU/frame load entirely and, being sourced from
+		// Lavalink's periodic stats broadcast (default every ~60s), is stale
+		// between broadcasts — every play requested inside that window used to
+		// tie and fall through to node insertion order, piling load onto the
+		// first configured node instead of spreading it.
 		let best: Node | undefined;
-		let bestPlayers = Number.POSITIVE_INFINITY;
-		let bestPriority = Number.NEGATIVE_INFINITY;
+		let bestScore = Number.POSITIVE_INFINITY;
 		for (const node of this.nodes.values()) {
 			if (!node.connected || !usable(node)) continue;
-			const players = node.stats?.playingPlayers ?? 0;
-			if (players < bestPlayers || (players === bestPlayers && node.options.priority > bestPriority)) {
+			const score = node.penalties;
+			if (score < bestScore) {
 				best = node;
-				bestPlayers = players;
-				bestPriority = node.options.priority;
+				bestScore = score;
 			}
 		}
 		return best;
@@ -459,7 +462,9 @@ export class Moodenglink extends EventEmitter {
 			const event = data.d as VoiceServer;
 			const player = this.players.get(event.guild_id);
 			if (!player) return;
-			void player.setVoiceState(undefined, event);
+			void player.setVoiceState(undefined, event).catch((error) => {
+				this.emit("nodeError", player.node, error as Error);
+			});
 			return;
 		}
 
@@ -479,7 +484,9 @@ export class Moodenglink extends EventEmitter {
 			}
 
 			player.voiceChannel = state.channel_id;
-			void player.setVoiceState(state.session_id);
+			void player.setVoiceState(state.session_id).catch((error) => {
+				this.emit("nodeError", player.node, error as Error);
+			});
 		}
 	}
 
@@ -524,6 +531,7 @@ export class Moodenglink extends EventEmitter {
 			}
 			if (!raw) continue;
 
+			let player: Player | null = null;
 			try {
 				const data = JSON.parse(raw) as ReturnType<Player["toJSON"]>;
 				if (data.node !== node.id || typeof data.guild !== "string" || !data.guild) continue;
@@ -534,7 +542,7 @@ export class Moodenglink extends EventEmitter {
 					continue;
 				}
 
-				const player = this.hydratePlayerFromStore(node, data);
+				player = this.hydratePlayerFromStore(node, data);
 				if (!player) continue;
 
 				if (!replay) {
@@ -553,6 +561,14 @@ export class Moodenglink extends EventEmitter {
 				this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
 			} catch (error) {
 				this.emit("debug", `[Moodenglink] Ignored malformed persisted player "${key}": ${(error as Error).message}`);
+				// A player can already be created/connected before the failure (e.g.
+				// play() rejecting on a decode error) — left alone it stays bound to
+				// voice with nothing playing. And this snapshot can never succeed on
+				// a future resume either, so without cleanup it retries forever.
+				if (player) await player.destroy({ disconnect: true, reason: "resume-failed" }).catch(() => null);
+				await Promise.resolve(store.delete(key)).catch((deleteError) => {
+					this.emit("storeError", deleteError as Error, "delete", key);
+				});
 			}
 		}
 	}

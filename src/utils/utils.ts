@@ -123,3 +123,25 @@ export function shuffleArray<T>(array: T[]): T[] {
 	}
 	return array;
 }
+
+/**
+ * `JSON.stringify` with circular-reference protection.
+ *
+ * Consumers commonly attach arbitrary host-app objects to a track (e.g. a
+ * `requester`) via `player.set()`/queue items, and those objects are free to
+ * reference back into structures that eventually reach this player (a Discord
+ * client, a cache, ...). A plain `JSON.stringify` throws synchronously the
+ * moment it meets a cycle, which is fatal for anything that persists player
+ * state. Circular values are replaced with `"[Circular]"` instead of failing
+ * the whole snapshot.
+ */
+export function safeStringify(value: unknown): string {
+	const seen = new WeakSet<object>();
+	return JSON.stringify(value, function replacer(_key, val) {
+		if (typeof val === "object" && val !== null) {
+			if (seen.has(val)) return "[Circular]";
+			seen.add(val);
+		}
+		return val;
+	});
+}

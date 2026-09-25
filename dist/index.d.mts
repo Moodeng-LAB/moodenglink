@@ -40,7 +40,7 @@ type Requester = RequesterTypes extends {
     requester: infer R;
 } ? R : unknown;
 /** Stable machine-readable reason attached to the `playerDestroy` event. */
-type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable";
+type PlayerDestroyReason = "manual" | "manager" | "voice-disconnect" | "queue-end" | "shutdown" | "node-unavailable" | "resume-failed";
 /** Options for {@link Player.destroy}. Passing a boolean remains supported for v1 compatibility. */
 interface PlayerDestroyOptions {
     /** Leave Discord voice before removing the player. Defaults to `true`. */
@@ -1440,6 +1440,18 @@ declare function buildAutoplaySeed(track: {
 }): string;
 /** Fisher-Yates in-place shuffle. */
 declare function shuffleArray<T>(array: T[]): T[];
+/**
+ * `JSON.stringify` with circular-reference protection.
+ *
+ * Consumers commonly attach arbitrary host-app objects to a track (e.g. a
+ * `requester`) via `player.set()`/queue items, and those objects are free to
+ * reference back into structures that eventually reach this player (a Discord
+ * client, a cache, ...). A plain `JSON.stringify` throws synchronously the
+ * moment it meets a cycle, which is fatal for anything that persists player
+ * state. Circular values are replaced with `"[Circular]"` instead of failing
+ * the whole snapshot.
+ */
+declare function safeStringify(value: unknown): string;
 
 /**
  * A tiny LRU cache with per-entry TTL, used for optional search-result caching.
@@ -1460,4 +1472,4 @@ declare class TTLCache<K, V> {
 
 var version = "1.8.1";
 
-export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, type Requester, type RequesterTypes, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndContext, type TrackEndEvent, type TrackEndIntent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, shuffleArray, sleep, version };
+export { type Band, type CPUStats, type ChannelMixSettings, type ChapterStartedEvent, type ChaptersLoadedEvent, type DistortionSettings, type EqualizerPreset, Equalizers, type EventPayloadBase, EventTypes, type Exception, type Extendable, type FilterPayload, Filters, type FrameStats, type HttpMethod, type IncomingPayload, type KaraokeSettings, type LavalinkPlayer, type LavalinkTrackLoadResult, type LavalinkVoiceState, type LoadType, type LowPassSettings, type LyricsFoundEvent, type LyricsLine, type LyricsLineEvent, type LyricsNotFoundEvent, type LyricsResult, Moodenglink as Manager, type ManagerEvents, type ManagerOptions, type ManagerPreset, type MemoryStats, MemoryStore, Moodenglink, Node, NodeCapabilityError, type NodeCapabilityReport, type NodeCapabilityRequirements, type NodeInfo, type NodeOptions, type NodeStats, OpCodes, type PlayOptions, Player, type PlayerBehaviorOptions, type PlayerDestroyContext, type PlayerDestroyOptions, type PlayerDestroyReason, type PlayerEvent, type PlayerOptions, type PlayerState, type PlayerUpdatePayload, type PlaylistInfo, Plugin, Queue, type QueueItem, type QueueMatcher, type QueueQuery, type QuickPlayOptions, type QuickPlayResult, type ReadyPayload, type RedisLike, RedisStore, RepeatMode, type RequestOptions, type Requester, type RequesterTypes, Rest, RestError, RestNetworkError, type RotationSettings, type SearchPlatform, type SearchPolicy, SearchPolicyError, SearchPrefixes, type SearchQuery, type SearchResult, type SegmentSkippedEvent, type SegmentsLoadedEvent, type SessionStore, type Severity, type SponsorBlockCategory, type SponsorBlockChapter, type SponsorBlockSegment, type State, type StatsPayload, type StoreOperation, Structure, TTLCache, type TimescaleSettings, type Track, type TrackData, type TrackEndContext, type TrackEndEvent, type TrackEndIntent, type TrackEndReason, type TrackExceptionEvent, type TrackInfo, type TrackStartEvent, type TrackStuckEvent, type TremoloSettings, type UnresolvedQuery, type UnresolvedTrack, type UpdatePlayerBody, type VibratoSettings, type VoiceGatewayPayload, type VoicePacket, type VoiceServer, type VoiceState, type WebSocketClosedEvent, buildAutoplaySeed, buildSearchIdentifier, buildTrack, clamp, formatDuration, isObject, isUnresolvedTrack, isUrl, leastLoadNode, leastUsedNode, partialTrack, pickClosestTrack, safeStringify, shuffleArray, sleep, version };

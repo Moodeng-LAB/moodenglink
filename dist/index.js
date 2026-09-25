@@ -63,6 +63,7 @@ __export(index_exports, {
   leastUsedNode: () => leastUsedNode,
   partialTrack: () => partialTrack,
   pickClosestTrack: () => pickClosestTrack,
+  safeStringify: () => safeStringify,
   shuffleArray: () => shuffleArray,
   sleep: () => sleep,
   version: () => version
@@ -216,6 +217,16 @@ function shuffleArray(array) {
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;
+}
+function safeStringify(value) {
+  const seen = /* @__PURE__ */ new WeakSet();
+  return JSON.stringify(value, function replacer(_key, val) {
+    if (typeof val === "object" && val !== null) {
+      if (seen.has(val)) return "[Circular]";
+      seen.add(val);
+    }
+    return val;
+  });
 }
 
 // src/utils/autoplay.ts
@@ -1391,7 +1402,10 @@ var Player = class _Player {
     }
     this.manager.emit("trackEnd", this, track, payload, { intent });
     if (payload.reason === "replaced" || payload.reason === "cleanup") return;
-    if (!intent && this.current && this.current.encoded !== payload.track.encoded) return;
+    if (!intent && this.current) {
+      const sameTrack = this.current.identifier ? this.current.identifier === payload.track.info.identifier : this.current.encoded === payload.track.encoded;
+      if (!sameTrack) return;
+    }
     if (payload.reason === "stopped" && intent === null) return;
     if (intent === "stop") {
       this.recordPrevious(track);
@@ -1530,7 +1544,13 @@ var Player = class _Player {
     const store = this.manager.options.store;
     if (!store || this.state === "DESTROYING") return;
     const key = `moodenglink:player:${this.guild}`;
-    const snapshot = JSON.stringify(this.toJSON());
+    let snapshot;
+    try {
+      snapshot = safeStringify(this.toJSON());
+    } catch (error) {
+      this.manager.emit("storeError", error, "set", key);
+      return;
+    }
     this.saveChain = this.saveChain.then(async () => {
       await Promise.resolve(store.set(key, snapshot)).catch((error) => {
         this.manager.emit("storeError", error, "set", key);
@@ -1792,15 +1812,13 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
     const sorter = this.options.sorter;
     if (sorter) return sorter(this.nodes.filter((n) => n.connected && usable(n))).first();
     let best;
-    let bestPlayers = Number.POSITIVE_INFINITY;
-    let bestPriority = Number.NEGATIVE_INFINITY;
+    let bestScore = Number.POSITIVE_INFINITY;
     for (const node of this.nodes.values()) {
       if (!node.connected || !usable(node)) continue;
-      const players = node.stats?.playingPlayers ?? 0;
-      if (players < bestPlayers || players === bestPlayers && node.options.priority > bestPriority) {
+      const score = node.penalties;
+      if (score < bestScore) {
         best = node;
-        bestPlayers = players;
-        bestPriority = node.options.priority;
+        bestScore = score;
       }
     }
     return best;
@@ -2011,7 +2029,9 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
       const event = data.d;
       const player = this.players.get(event.guild_id);
       if (!player) return;
-      void player.setVoiceState(void 0, event);
+      void player.setVoiceState(void 0, event).catch((error) => {
+        this.emit("nodeError", player.node, error);
+      });
       return;
     }
     if (data.t === "VOICE_STATE_UPDATE") {
@@ -2027,7 +2047,9 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
         return;
       }
       player.voiceChannel = state.channel_id;
-      void player.setVoiceState(state.session_id);
+      void player.setVoiceState(state.session_id).catch((error) => {
+        this.emit("nodeError", player.node, error);
+      });
     }
   }
   /* ----------------------------- resilience ----------------------------- */
@@ -2067,6 +2089,7 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
         continue;
       }
       if (!raw) continue;
+      let player = null;
       try {
         const data = JSON.parse(raw);
         if (data.node !== node.id || typeof data.guild !== "string" || !data.guild) continue;
@@ -2076,7 +2099,7 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
           if (replay && existing.node === node) await existing.restoreNodeState();
           continue;
         }
-        const player = this.hydratePlayerFromStore(node, data);
+        player = this.hydratePlayerFromStore(node, data);
         if (!player) continue;
         if (!replay) {
           player.paused = data.paused === true;
@@ -2092,6 +2115,10 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
         this.emit("debug", `[Moodenglink] Resumed player for guild ${data.guild}.`);
       } catch (error) {
         this.emit("debug", `[Moodenglink] Ignored malformed persisted player "${key}": ${error.message}`);
+        if (player) await player.destroy({ disconnect: true, reason: "resume-failed" }).catch(() => null);
+        await Promise.resolve(store.delete(key)).catch((deleteError) => {
+          this.emit("storeError", deleteError, "delete", key);
+        });
       }
     }
   }
@@ -2378,6 +2405,7 @@ function leastUsedNode(nodes) {
   leastUsedNode,
   partialTrack,
   pickClosestTrack,
+  safeStringify,
   shuffleArray,
   sleep,
   version
