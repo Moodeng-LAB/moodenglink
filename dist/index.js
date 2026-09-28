@@ -614,11 +614,19 @@ var Rest = class {
   }
   /* ------------------------- lyrics (LavaLyrics) ------------------------- */
   /** Fetches lyrics for a guild's currently-playing track. */
-  getLyrics(guildId, skipTrackSource = false) {
+  async getLyrics(guildId, skipTrackSource = false) {
+    if (this.node.isNodeLink) {
+      const encoded = this.node.manager.players.get(guildId)?.current?.encoded;
+      return encoded ? this.getLyricsForTrack(encoded, skipTrackSource) : null;
+    }
     return this.request(`${this.sessionPath}/players/${guildId}/track/lyrics`, { query: { skipTrackSource } });
   }
   /** Fetches lyrics for an arbitrary encoded track. */
-  getLyricsForTrack(encoded, skipTrackSource = false) {
+  async getLyricsForTrack(encoded, skipTrackSource = false) {
+    if (this.node.isNodeLink) {
+      const raw = await this.request("/loadlyrics", { query: { encodedTrack: encoded } });
+      return mapNodeLinkLyrics(raw);
+    }
     return this.request("/lyrics", { query: { track: encoded, skipTrackSource } });
   }
   /** Subscribes to live (line-by-line) lyrics events for a guild. */
@@ -643,6 +651,25 @@ var Rest = class {
     return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE", idempotent: true });
   }
 };
+function mapNodeLinkLyrics(raw) {
+  if (raw.loadType === "empty") return null;
+  if (raw.loadType === "error") {
+    throw new RestError(`NodeLink lyrics error: ${raw.data.message}`, 500, { method: "GET", endpoint: "/loadlyrics" });
+  }
+  const lines = raw.data.lines ?? [];
+  return {
+    sourceName: raw.data.name ?? raw.data.provider ?? "",
+    provider: raw.data.provider ?? "",
+    text: lines.length ? lines.map((line) => line.text).join("\n") : null,
+    lines: lines.map((line) => ({
+      timestamp: line.time,
+      duration: line.duration ?? null,
+      line: line.text,
+      plugin: line.words ? { words: line.words } : {}
+    })),
+    plugin: typeof raw.data.synced === "boolean" ? { synced: raw.data.synced } : {}
+  };
+}
 var RestError = class extends Error {
   constructor(message, status, details = {}) {
     super(message);

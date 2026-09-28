@@ -179,6 +179,72 @@ describe("Rest — LavaLyrics endpoints", () => {
 	});
 });
 
+describe("Rest — NodeLink lyrics (/v4/loadlyrics)", () => {
+	function makeNodeLinkNode(players: Map<string, unknown> = new Map()) {
+		const manager = { emit: vi.fn(), players } as unknown as Moodenglink;
+		const node = new Node(manager, { host: "localhost", retryAmount: 0 });
+		node.info = { isNodelink: true } as never;
+		return node;
+	}
+
+	it("getLyricsForTrack() hits /v4/loadlyrics (not /v4/lyrics) and maps a 'lyrics' response", async () => {
+		const node = makeNodeLinkNode();
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				loadType: "lyrics",
+				data: { name: "Genius", provider: "Genius", synced: true, lines: [{ text: "hello", time: 0, duration: 1000 }] },
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await node.rest.getLyricsForTrack("ENC");
+		const { url } = lastCall(fetchMock);
+		expect(url.pathname).toBe("/v4/loadlyrics");
+		expect(url.searchParams.get("encodedTrack")).toBe("ENC");
+		expect(result).toEqual({
+			sourceName: "Genius",
+			provider: "Genius",
+			text: "hello",
+			lines: [{ timestamp: 0, duration: 1000, line: "hello", plugin: {} }],
+			plugin: { synced: true },
+		});
+	});
+
+	it("getLyricsForTrack() maps an 'empty' response to null", async () => {
+		const node = makeNodeLinkNode();
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ loadType: "empty", data: {} })));
+
+		await expect(node.rest.getLyricsForTrack("ENC")).resolves.toBeNull();
+	});
+
+	it("getLyricsForTrack() throws a RestError on an 'error' response", async () => {
+		const node = makeNodeLinkNode();
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ loadType: "error", data: { message: "boom", severity: "common" } })));
+
+		await expect(node.rest.getLyricsForTrack("ENC")).rejects.toBeInstanceOf(RestError);
+	});
+
+	it("getLyrics() resolves the guild's currently-playing encoded track and delegates to loadlyrics", async () => {
+		const node = makeNodeLinkNode(new Map([["g1", { current: { encoded: "ENC" } }]]));
+		const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ loadType: "empty", data: {} }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await node.rest.getLyrics("g1");
+		const { url } = lastCall(fetchMock);
+		expect(url.pathname).toBe("/v4/loadlyrics");
+		expect(url.searchParams.get("encodedTrack")).toBe("ENC");
+	});
+
+	it("getLyrics() returns null without a network call when nothing is playing", async () => {
+		const node = makeNodeLinkNode();
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(node.rest.getLyrics("g1")).resolves.toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
 describe("Rest — SponsorBlock endpoints", () => {
 	it("sets, gets, and clears SponsorBlock categories", async () => {
 		const node = makeNode();
