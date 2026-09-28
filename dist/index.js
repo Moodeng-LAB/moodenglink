@@ -832,7 +832,8 @@ var Node = class {
     }
     this.reconnectAttempts = 0;
     this.manager.emit("nodeConnect", this);
-    this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
+    const kind = this.isNodeLink === null ? "unknown" : this.isNodeLink ? "NodeLink" : "Lavalink";
+    this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}, kind=${kind}).`);
     if (this.manager.options.autoResume) {
       if (payload.resumed) {
         await this.manager.syncResumedPlayers(this).catch(() => null);
@@ -911,6 +912,16 @@ var Node = class {
       this.manager.emit("debug", `[Node ${this.id}] Reconnecting (attempt ${this.reconnectAttempts}/${this.options.retryAmount}).`);
       this.connect();
     }, delay);
+  }
+  /**
+   * Whether this node is a [NodeLink](https://github.com/PerformanC/NodeLink)
+   * instance rather than Lavalink. NodeLink speaks the same `/v4` REST and
+   * WebSocket protocol, so no other behavior here branches on it — this is
+   * purely informational for consumers (e.g. deciding which sources/plugins
+   * to expect). `null` until `/v4/info` has been fetched on READY.
+   */
+  get isNodeLink() {
+    return this.info ? this.info.isNodelink === true : null;
   }
   /** Whether the node advertises a source manager (case-insensitive). */
   supportsSource(source) {

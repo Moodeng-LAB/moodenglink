@@ -278,8 +278,19 @@ interface NodeInfo {
         commit: string;
         commitTime: number;
     };
-    jvm: string;
-    lavaplayer: string;
+    /** Present on Lavalink; NodeLink omits this in favour of {@link node}/{@link voice}. */
+    jvm?: string;
+    /** Present on Lavalink; NodeLink omits this in favour of {@link node}/{@link voice}. */
+    lavaplayer?: string;
+    /** NodeLink's Node.js runtime version, in place of Lavalink's `jvm`. */
+    node?: string;
+    /** NodeLink's bundled voice library, in place of Lavalink's `lavaplayer`. */
+    voice?: {
+        name: string;
+        version: string;
+    };
+    /** `true` when the node is a [NodeLink](https://github.com/PerformanC/NodeLink) instance rather than Lavalink. */
+    isNodelink?: boolean;
     sourceManagers: string[];
     filters: string[];
     plugins: {
@@ -731,6 +742,14 @@ declare class Node {
     private onClose;
     private onError;
     private reconnect;
+    /**
+     * Whether this node is a [NodeLink](https://github.com/PerformanC/NodeLink)
+     * instance rather than Lavalink. NodeLink speaks the same `/v4` REST and
+     * WebSocket protocol, so no other behavior here branches on it — this is
+     * purely informational for consumers (e.g. deciding which sources/plugins
+     * to expect). `null` until `/v4/info` has been fetched on READY.
+     */
+    get isNodeLink(): boolean | null;
     /** Whether the node advertises a source manager (case-insensitive). */
     supportsSource(source: string): boolean;
     /** Whether the node advertises a Lavalink filter (case-insensitive). */

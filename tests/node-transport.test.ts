@@ -391,6 +391,36 @@ describe("Node — READY handshake", () => {
 
 		expect(manager.emit).not.toHaveBeenCalledWith("nodeConnect", node);
 	});
+
+	it("flags isNodeLink from /info's isNodelink field, and null before READY", async () => {
+		const manager = makeManager();
+		const node = new Node(manager, { host: "h" });
+		expect(node.isNodeLink).toBeNull();
+
+		node.connect();
+		const socket = latestSocket();
+		vi.spyOn(node.rest, "updateSession").mockResolvedValue({ resuming: true, timeout: 60 });
+		vi.spyOn(node.rest, "getInfo").mockResolvedValue({ sourceManagers: [], filters: [], plugins: [], isNodelink: true } as never);
+
+		fireReady(socket);
+		await vi.waitFor(() => expect(manager.emit).toHaveBeenCalledWith("nodeConnect", node));
+
+		expect(node.isNodeLink).toBe(true);
+	});
+
+	it("flags isNodeLink false for a plain Lavalink /info response", async () => {
+		const manager = makeManager();
+		const node = new Node(manager, { host: "h" });
+		node.connect();
+		const socket = latestSocket();
+		vi.spyOn(node.rest, "updateSession").mockResolvedValue({ resuming: true, timeout: 60 });
+		vi.spyOn(node.rest, "getInfo").mockResolvedValue({ sourceManagers: [], filters: [], plugins: [] } as never);
+
+		fireReady(socket);
+		await vi.waitFor(() => expect(manager.emit).toHaveBeenCalledWith("nodeConnect", node));
+
+		expect(node.isNodeLink).toBe(false);
+	});
 });
 
 describe("Node — getters", () => {

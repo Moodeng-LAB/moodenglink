@@ -222,7 +222,8 @@ export class Node {
 		this.reconnectAttempts = 0;
 
 		this.manager.emit("nodeConnect", this);
-		this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}).`);
+		const kind = this.isNodeLink === null ? "unknown" : this.isNodeLink ? "NodeLink" : "Lavalink";
+		this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}, kind=${kind}).`);
 
 		// Only restore from the store on a *cold* session. When `resumed` is true the
 		// node kept our previous session alive and is still playing, so replaying
@@ -319,6 +320,17 @@ export class Node {
 			this.manager.emit("debug", `[Node ${this.id}] Reconnecting (attempt ${this.reconnectAttempts}/${this.options.retryAmount}).`);
 			this.connect();
 		}, delay);
+	}
+
+	/**
+	 * Whether this node is a [NodeLink](https://github.com/PerformanC/NodeLink)
+	 * instance rather than Lavalink. NodeLink speaks the same `/v4` REST and
+	 * WebSocket protocol, so no other behavior here branches on it — this is
+	 * purely informational for consumers (e.g. deciding which sources/plugins
+	 * to expect). `null` until `/v4/info` has been fetched on READY.
+	 */
+	public get isNodeLink(): boolean | null {
+		return this.info ? this.info.isNodelink === true : null;
 	}
 
 	/** Whether the node advertises a source manager (case-insensitive). */
