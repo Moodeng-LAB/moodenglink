@@ -173,6 +173,19 @@ untouched and `requester` stays `unknown` exactly as before.
 | `resumeTimeout`  | `number`  | `60`                | Node-side session resume window (s).            |
 | `capabilities`   | `NodeCapabilityRequirements` | `{}`       | Required sources, filters and plugins; optional strict mode. |
 
+### NodeLink
+
+[NodeLink](https://github.com/PerformanC/NodeLink) speaks the same `/v4` REST and WebSocket
+protocol as Lavalink, so it needs no special configuration — point a node's `host`/`port` at it
+like any other node. Once it's connected, `node.isNodeLink` tells you which kind of server you're
+talking to (`true` NodeLink, `false` Lavalink, `null` until `/v4/info` resolves on READY):
+
+```ts
+manager.on("nodeConnect", (node) => {
+	console.log(node.id, node.isNodeLink ? "NodeLink" : "Lavalink");
+});
+```
+
 ---
 
 ## 🎛️ Player & Queue
