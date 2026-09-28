@@ -16,7 +16,11 @@ function endEvent(reason: TrackEndReason, encoded = "t1"): TrackEndEvent {
 		op: "event" as never,
 		type: EventTypes.TrackEndEvent,
 		guildId: "g1",
-		track: makeTrackData({}, encoded),
+		// Identifier mirrors `encoded` here, same convention as the `track()`
+		// helper above — real Lavalink TrackEnd payloads always carry the
+		// track's real identifier alongside `encoded`, they don't default it to
+		// a constant regardless of which track ended.
+		track: makeTrackData({ identifier: encoded }, encoded),
 		reason,
 	};
 }

@@ -15,7 +15,7 @@ import type {
 import type { PlayerDestroyOptions, PlayerOptions, QueueItem, State, Track, UnresolvedTrack, VoiceServer } from "../types/Player";
 import { RepeatMode } from "../types/Player";
 import type { LavalinkPlayer, UpdatePlayerBody } from "../types/Rest";
-import { buildTrack, clamp, isUnresolvedTrack, sleep } from "../utils/utils";
+import { buildTrack, clamp, isUnresolvedTrack, safeStringify, sleep } from "../utils/utils";
 import type { Filters } from "./Filters";
 import type { Moodenglink } from "./Moodenglink";
 import type { Node } from "./Node";
@@ -590,8 +590,16 @@ export class Player {
 		if (payload.reason === "replaced" || payload.reason === "cleanup") return;
 
 		// Orphan / delayed events: if we already moved on to a different current
-		// track and this end was not our stop/skip, ignore it.
-		if (!intent && this.current && this.current.encoded !== payload.track.encoded) return;
+		// track and this end was not our stop/skip, ignore it. Matched by
+		// identifier rather than the raw encoded string — a node can legitimately
+		// re-encode the same track (LavaSrc/Spotify rewrite, resume rehydration),
+		// which changes `encoded` but not what's actually playing. Comparing the
+		// encoded blob directly treated that as an orphan and dropped the event,
+		// stranding the player with nothing advancing the queue.
+		if (!intent && this.current) {
+			const sameTrack = this.current.identifier ? this.current.identifier === payload.track.info.identifier : this.current.encoded === payload.track.encoded;
+			if (!sameTrack) return;
+		}
 
 		// A stopped event only advances when it belongs to an explicit skip.
 		// Delayed/orphan stopped events must never kill a newly-started track.
@@ -771,7 +779,17 @@ export class Player {
 		const store = this.manager.options.store;
 		if (!store || this.state === "DESTROYING") return;
 		const key = `moodenglink:player:${this.guild}`;
-		const snapshot = JSON.stringify(this.toJSON());
+
+		let snapshot: string;
+		try {
+			snapshot = safeStringify(this.toJSON());
+		} catch (error) {
+			// Serialisation must never reject save() — callers routinely fire it
+			// with `void` from sync setters and have no way to catch a rejection.
+			this.manager.emit("storeError", error as Error, "set", key);
+			return;
+		}
+
 		this.saveChain = this.saveChain.then(async () => {
 			await Promise.resolve(store.set(key, snapshot)).catch((error) => {
 				this.manager.emit("storeError", error as Error, "set", key);
