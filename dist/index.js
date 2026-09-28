@@ -292,7 +292,7 @@ async function resolveAutoplayCandidates(manager, previous, requester) {
 }
 
 // package.json
-var version = "1.10.0";
+var version = "1.11.0";
 
 // src/utils/equalizers.ts
 var bands = (gains) => Object.freeze(gains.map((gain, band) => Object.freeze({ band, gain })));
