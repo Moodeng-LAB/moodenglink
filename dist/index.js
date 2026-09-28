@@ -2007,8 +2007,17 @@ var Moodenglink = class _Moodenglink extends import_node_events.EventEmitter {
     for (const item of player.queue) mark(item);
     const fresh = candidates.filter((t) => !trackKeys(t).some((key) => seen.has(key)));
     const previousKeys = new Set(trackKeys(previous));
-    const pool = fresh.length ? fresh : candidates.filter((t) => !trackKeys(t).some((key) => previousKeys.has(key)));
+    let pool = fresh.length ? fresh : candidates.filter((t) => !trackKeys(t).some((key) => previousKeys.has(key)));
     if (!pool.length) return false;
+    const maxSameArtistInRow = this.options.maxSameArtistInRow ?? 3;
+    if (maxSameArtistInRow > 0) {
+      const recentAuthors = player.queue.previous.slice(0, maxSameArtistInRow - 1).map((t) => t.author?.toLowerCase()).filter((author) => !!author);
+      const streaking = recentAuthors.length === maxSameArtistInRow - 1 && recentAuthors.every((a) => a === recentAuthors[0]);
+      if (streaking) {
+        const withoutStreak = pool.filter((t) => t.author?.toLowerCase() !== recentAuthors[0]);
+        if (withoutStreak.length) pool = withoutStreak;
+      }
+    }
     const window = Math.max(1, Math.min(this.options.autoplaySampleSize ?? 5, pool.length));
     const next = { ...pool[Math.floor(Math.random() * window)], requester };
     if (this.players.get(player.guild) !== player || player.state === "DESTROYING" || player.current !== expectedCurrent || player.queue.length > 0) {

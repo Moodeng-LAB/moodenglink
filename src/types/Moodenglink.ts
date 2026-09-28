@@ -99,6 +99,13 @@ export interface ManagerOptions {
 	 */
 	autoplaySampleSize?: number;
 	/**
+	 * Caps how many autoplay picks in a row may share the same artist before
+	 * candidates from that artist are skipped in favour of anything else in the
+	 * pool. Sourced from the most recently played history, not the full session.
+	 * Set to `0` to disable. Defaults to `3`.
+	 */
+	maxSameArtistInRow?: number;
+	/**
 	 * The `requester` stamped on autoplay-queued tracks. Set to your client user,
 	 * `null`, or any marker so panels don't credit an autoplayed pick to whoever
 	 * requested the previous track. When omitted, the previous track's requester

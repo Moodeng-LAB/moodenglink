@@ -431,8 +431,26 @@ export class Moodenglink extends EventEmitter {
 
 		const fresh = candidates.filter((t) => !trackKeys(t).some((key) => seen.has(key)));
 		const previousKeys = new Set(trackKeys(previous));
-		const pool = fresh.length ? fresh : candidates.filter((t) => !trackKeys(t).some((key) => previousKeys.has(key)));
+		let pool = fresh.length ? fresh : candidates.filter((t) => !trackKeys(t).some((key) => previousKeys.has(key)));
 		if (!pool.length) return false;
+
+		// Don't let the same artist dominate several autoplay picks in a row —
+		// only look at how the *last* N-1 tracks played, so an artist who was
+		// popular earlier in the session isn't penalised forever.
+		const maxSameArtistInRow = this.options.maxSameArtistInRow ?? 3;
+		if (maxSameArtistInRow > 0) {
+			// `previous` is already at queue.previous[0] by this point (advance()
+			// records it before calling handleAutoplay) — no need to prepend it.
+			const recentAuthors = player.queue.previous
+				.slice(0, maxSameArtistInRow - 1)
+				.map((t) => t.author?.toLowerCase())
+				.filter((author): author is string => !!author);
+			const streaking = recentAuthors.length === maxSameArtistInRow - 1 && recentAuthors.every((a) => a === recentAuthors[0]);
+			if (streaking) {
+				const withoutStreak = pool.filter((t) => t.author?.toLowerCase() !== recentAuthors[0]);
+				if (withoutStreak.length) pool = withoutStreak;
+			}
+		}
 
 		// Bias toward the more-relevant head of the list, but keep it from feeling
 		// robotic by sampling within a small window.
