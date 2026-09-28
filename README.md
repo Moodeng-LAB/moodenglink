@@ -186,6 +186,11 @@ manager.on("nodeConnect", (node) => {
 });
 ```
 
+NodeLink also returns extended `loadType`s (`album`, `artist`, `podcast`, `station`) for sources
+that resolve to a named collection instead of standard Lavalink's `playlist`. `search()`/`play()`
+treat all of them the same as `playlist` — every track is queued and `result.playlist` is
+populated — while `result.loadType` still reports the original value.
+
 ---
 
 ## 🎛️ Player & Queue

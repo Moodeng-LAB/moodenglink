@@ -5,7 +5,7 @@
 
 import type { FilterPayload } from "./Filters";
 import type { PlayerState } from "./Op";
-import type { TrackData } from "./Player";
+import type { LoadType, TrackData } from "./Player";
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
@@ -63,6 +63,6 @@ export interface LavalinkPlayer {
 }
 
 export interface LavalinkTrackLoadResult {
-	loadType: "track" | "playlist" | "search" | "empty" | "error";
+	loadType: LoadType;
 	data: unknown;
 }

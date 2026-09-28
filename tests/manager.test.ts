@@ -134,6 +134,23 @@ describe("Moodenglink.search", () => {
 		expect(res.tracks).toHaveLength(2);
 	});
 
+	it.each(["album", "artist", "podcast", "station"] as const)("resolves a NodeLink '%s' loadType like a playlist", async (loadType) => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({
+			loadType,
+			data: {
+				info: { name: "NodeLink collection", selectedTrack: 0 },
+				tracks: [makeTrackData({ length: 1000 }, "E1"), makeTrackData({ length: 2000 }, "E2")],
+			},
+		});
+
+		const res = await manager.search("https://example.com/collection");
+		expect(res.loadType).toBe(loadType);
+		expect(res.playlist?.name).toBe("NodeLink collection");
+		expect(res.playlist?.duration).toBe(3000);
+		expect(res.tracks).toHaveLength(2);
+	});
+
 	it("applies trackPartial to strip fields", async () => {
 		const { manager, node } = buildManager({ trackPartial: ["title"] });
 		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({ loadType: "track", data: makeTrackData({}, "E1") });
@@ -264,6 +281,27 @@ describe("Moodenglink players", () => {
 		expect(player.current?.encoded).toBe("E1");
 		expect(send).toHaveBeenCalledOnce();
 		expect(update).toHaveBeenCalledWith("g1", expect.objectContaining({ track: { encoded: "E1", userData: {} } }), false);
+	});
+
+	it("queues every track of a NodeLink 'album' result, not just the first", async () => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({
+			loadType: "album",
+			data: {
+				info: { name: "Discovery", selectedTrack: 0 },
+				tracks: [makeTrackData({ title: "One More Time" }, "E1"), makeTrackData({ title: "Aerodynamic" }, "E2")],
+			},
+		});
+		vi.spyOn(node.rest, "updatePlayer").mockResolvedValue({} as never);
+
+		const { queued } = await manager.play({
+			guild: "g1",
+			voiceChannel: "vc1",
+			query: "https://music.apple.com/album/discovery",
+			requester: "user",
+		});
+
+		expect(queued.map((track) => track.encoded)).toEqual(["E1", "E2"]);
 	});
 
 	it("does not return or race a player that is still destroying", async () => {

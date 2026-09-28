@@ -34,6 +34,9 @@ import { Player } from "./Player";
 import { Structure } from "./Structure";
 import type { Plugin } from "./Plugin";
 
+/** `loadType`s whose `data` is a named multi-track collection, shaped like `playlist`'s. */
+const COLLECTION_LOAD_TYPES: ReadonlySet<LoadType> = new Set(["playlist", "album", "artist", "podcast", "station"]);
+
 // Strongly typed EventEmitter surface — class+interface merging is the
 // standard pattern for typing EventEmitter subclasses (also used by discord.js).
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -287,7 +290,7 @@ export class Moodenglink extends EventEmitter {
 
 		// Only cache useful, deterministic results. Store a requester-free deep
 		// clone so the entry is independent of the copy handed back to the caller.
-		if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || result.loadType === "playlist")) {
+		if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || COLLECTION_LOAD_TYPES.has(result.loadType))) {
 			this.searchCache.set(identifier, {
 				...result,
 				playlist: result.playlist ? { ...result.playlist } : result.playlist,
@@ -304,7 +307,7 @@ export class Moodenglink extends EventEmitter {
 	public async play(options: QuickPlayOptions): Promise<QuickPlayResult> {
 		const { query, requester, addAll, ...playerOptions } = options;
 		const result = await this.search(query, requester);
-		const queued = result.loadType === "playlist" || addAll ? result.tracks : result.tracks.slice(0, 1);
+		const queued = COLLECTION_LOAD_TYPES.has(result.loadType) || addAll ? result.tracks : result.tracks.slice(0, 1);
 		if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
 
 		const player = this.create(playerOptions);
@@ -368,7 +371,11 @@ export class Moodenglink extends EventEmitter {
 			case "search":
 				result.tracks = (res.data as TrackData[]).map(make);
 				break;
-			case "playlist": {
+			case "playlist":
+			case "album":
+			case "artist":
+			case "podcast":
+			case "station": {
 				const data = res.data as { info: PlaylistInfo; tracks: TrackData[]; pluginInfo?: Record<string, unknown> };
 				result.tracks = data.tracks.map(make);
 				result.playlist = {

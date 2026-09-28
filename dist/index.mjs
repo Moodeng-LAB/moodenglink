@@ -1635,6 +1635,7 @@ var Structure = class _Structure {
 };
 
 // src/classes/Moodenglink.ts
+var COLLECTION_LOAD_TYPES = /* @__PURE__ */ new Set(["playlist", "album", "artist", "podcast", "station"]);
 var SearchPolicyError = class extends Error {
   constructor(message, query) {
     super(message);
@@ -1824,7 +1825,7 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
     }
     const res = await node.rest.loadTracks(identifier);
     const result = this.resolveLoadResult(res, requester);
-    if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || result.loadType === "playlist")) {
+    if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || COLLECTION_LOAD_TYPES.has(result.loadType))) {
       this.searchCache.set(identifier, {
         ...result,
         playlist: result.playlist ? { ...result.playlist } : result.playlist,
@@ -1840,7 +1841,7 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
   async play(options) {
     const { query, requester, addAll, ...playerOptions } = options;
     const result = await this.search(query, requester);
-    const queued = result.loadType === "playlist" || addAll ? result.tracks : result.tracks.slice(0, 1);
+    const queued = COLLECTION_LOAD_TYPES.has(result.loadType) || addAll ? result.tracks : result.tracks.slice(0, 1);
     if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
     const player = this.create(playerOptions);
     if (playerOptions.voiceChannel && player.voiceChannel !== playerOptions.voiceChannel) {
@@ -1895,7 +1896,11 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
       case "search":
         result.tracks = res.data.map(make);
         break;
-      case "playlist": {
+      case "playlist":
+      case "album":
+      case "artist":
+      case "podcast":
+      case "station": {
         const data = res.data;
         result.tracks = data.tracks.map(make);
         result.playlist = {
