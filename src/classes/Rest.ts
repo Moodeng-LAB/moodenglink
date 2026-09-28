@@ -5,7 +5,7 @@
 
 import type { NodeInfo, NodeStats } from "../types/Node";
 import type { LyricsResult, SponsorBlockCategory } from "../types/Op";
-import type { LavalinkPlayer, RequestOptions, UpdatePlayerBody } from "../types/Rest";
+import type { LavalinkPlayer, NodeLinkLyricsLoadResult, RequestOptions, UpdatePlayerBody } from "../types/Rest";
 import { sleep } from "../utils/utils";
 import type { Node } from "./Node";
 
@@ -181,12 +181,23 @@ export class Rest {
 	/* ------------------------- lyrics (LavaLyrics) ------------------------- */
 
 	/** Fetches lyrics for a guild's currently-playing track. */
-	public getLyrics(guildId: string, skipTrackSource = false): Promise<LyricsResult | null> {
+	public async getLyrics(guildId: string, skipTrackSource = false): Promise<LyricsResult | null> {
+		if (this.node.isNodeLink) {
+			// NodeLink's /v4/loadlyrics is stateless (no per-guild "now playing" lookup) —
+			// resolve the currently-playing encoded track locally and delegate.
+			const encoded = this.node.manager.players.get(guildId)?.current?.encoded;
+			return encoded ? this.getLyricsForTrack(encoded, skipTrackSource) : null;
+		}
 		return this.request(`${this.sessionPath}/players/${guildId}/track/lyrics`, { query: { skipTrackSource } });
 	}
 
 	/** Fetches lyrics for an arbitrary encoded track. */
-	public getLyricsForTrack(encoded: string, skipTrackSource = false): Promise<LyricsResult | null> {
+	public async getLyricsForTrack(encoded: string, skipTrackSource = false): Promise<LyricsResult | null> {
+		if (this.node.isNodeLink) {
+			// NodeLink has no skipTrackSource equivalent — it always re-resolves via its own providers.
+			const raw = await this.request<NodeLinkLyricsLoadResult>("/loadlyrics", { query: { encodedTrack: encoded } });
+			return mapNodeLinkLyrics(raw);
+		}
 		return this.request("/lyrics", { query: { track: encoded, skipTrackSource } });
 	}
 
@@ -216,6 +227,28 @@ export class Rest {
 	public clearSponsorBlockCategories(guildId: string): Promise<void> {
 		return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE", idempotent: true });
 	}
+}
+
+/** Converts NodeLink's `/v4/loadlyrics` envelope into Moodenglink's Lavalink-shaped {@link LyricsResult}. */
+function mapNodeLinkLyrics(raw: NodeLinkLyricsLoadResult): LyricsResult | null {
+	if (raw.loadType === "empty") return null;
+	if (raw.loadType === "error") {
+		throw new RestError(`NodeLink lyrics error: ${raw.data.message}`, 500, { method: "GET", endpoint: "/loadlyrics" });
+	}
+
+	const lines = raw.data.lines ?? [];
+	return {
+		sourceName: raw.data.name ?? raw.data.provider ?? "",
+		provider: raw.data.provider ?? "",
+		text: lines.length ? lines.map((line) => line.text).join("\n") : null,
+		lines: lines.map((line) => ({
+			timestamp: line.time,
+			duration: line.duration ?? null,
+			line: line.text,
+			plugin: line.words ? { words: line.words } : {},
+		})),
+		plugin: typeof raw.data.synced === "boolean" ? { synced: raw.data.synced } : {},
+	};
 }
 
 interface RestErrorDetails {

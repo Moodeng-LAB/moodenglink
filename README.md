@@ -186,6 +186,17 @@ manager.on("nodeConnect", (node) => {
 });
 ```
 
+NodeLink also returns extended `loadType`s (`album`, `artist`, `podcast`, `station`) for sources
+that resolve to a named collection instead of standard Lavalink's `playlist`. `search()`/`play()`
+treat all of them the same as `playlist` — every track is queued and `result.playlist` is
+populated — while `result.loadType` still reports the original value.
+
+Lyrics work transparently too: NodeLink doesn't implement Lavalink's LavaLyrics-plugin REST shape
+(`/v4/lyrics`, `/v4/sessions/{id}/players/{guildId}/track/lyrics`) — it exposes a differently-shaped
+`/v4/loadlyrics` endpoint instead. `player.getLyrics()` / `node.rest.getLyricsForTrack(encoded)`
+detect NodeLink automatically and map its response into the same `LyricsResult` shape Lavalink
+callers get, so no branching is needed in your bot's code.
+
 ---
 
 ## 🎛️ Player & Queue
@@ -301,7 +312,8 @@ manager.on("lyricsLine", (player, line) => console.log(line.line));
 manager.on("lyricsNotFound", (player) => console.log("No lyrics available."));
 ```
 
-Requires the [LavaLyrics](https://github.com/DuncteBot/java-timed-lyrics) plugin on your node.
+Requires the [LavaLyrics](https://github.com/DuncteBot/java-timed-lyrics) plugin on Lavalink —
+[NodeLink](https://github.com/PerformanC/NodeLink) nodes support it natively, no plugin needed.
 
 ---
 

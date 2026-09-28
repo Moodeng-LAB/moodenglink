@@ -542,11 +542,19 @@ var Rest = class {
   }
   /* ------------------------- lyrics (LavaLyrics) ------------------------- */
   /** Fetches lyrics for a guild's currently-playing track. */
-  getLyrics(guildId, skipTrackSource = false) {
+  async getLyrics(guildId, skipTrackSource = false) {
+    if (this.node.isNodeLink) {
+      const encoded = this.node.manager.players.get(guildId)?.current?.encoded;
+      return encoded ? this.getLyricsForTrack(encoded, skipTrackSource) : null;
+    }
     return this.request(`${this.sessionPath}/players/${guildId}/track/lyrics`, { query: { skipTrackSource } });
   }
   /** Fetches lyrics for an arbitrary encoded track. */
-  getLyricsForTrack(encoded, skipTrackSource = false) {
+  async getLyricsForTrack(encoded, skipTrackSource = false) {
+    if (this.node.isNodeLink) {
+      const raw = await this.request("/loadlyrics", { query: { encodedTrack: encoded } });
+      return mapNodeLinkLyrics(raw);
+    }
     return this.request("/lyrics", { query: { track: encoded, skipTrackSource } });
   }
   /** Subscribes to live (line-by-line) lyrics events for a guild. */
@@ -571,6 +579,25 @@ var Rest = class {
     return this.request(`${this.sessionPath}/players/${guildId}/sponsorblock/categories`, { method: "DELETE", idempotent: true });
   }
 };
+function mapNodeLinkLyrics(raw) {
+  if (raw.loadType === "empty") return null;
+  if (raw.loadType === "error") {
+    throw new RestError(`NodeLink lyrics error: ${raw.data.message}`, 500, { method: "GET", endpoint: "/loadlyrics" });
+  }
+  const lines = raw.data.lines ?? [];
+  return {
+    sourceName: raw.data.name ?? raw.data.provider ?? "",
+    provider: raw.data.provider ?? "",
+    text: lines.length ? lines.map((line) => line.text).join("\n") : null,
+    lines: lines.map((line) => ({
+      timestamp: line.time,
+      duration: line.duration ?? null,
+      line: line.text,
+      plugin: line.words ? { words: line.words } : {}
+    })),
+    plugin: typeof raw.data.synced === "boolean" ? { synced: raw.data.synced } : {}
+  };
+}
 var RestError = class extends Error {
   constructor(message, status, details = {}) {
     super(message);
@@ -1635,6 +1662,7 @@ var Structure = class _Structure {
 };
 
 // src/classes/Moodenglink.ts
+var COLLECTION_LOAD_TYPES = /* @__PURE__ */ new Set(["playlist", "album", "artist", "podcast", "station"]);
 var SearchPolicyError = class extends Error {
   constructor(message, query) {
     super(message);
@@ -1824,7 +1852,7 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
     }
     const res = await node.rest.loadTracks(identifier);
     const result = this.resolveLoadResult(res, requester);
-    if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || result.loadType === "playlist")) {
+    if (this.searchCache && (result.loadType === "track" || result.loadType === "search" || COLLECTION_LOAD_TYPES.has(result.loadType))) {
       this.searchCache.set(identifier, {
         ...result,
         playlist: result.playlist ? { ...result.playlist } : result.playlist,
@@ -1840,7 +1868,7 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
   async play(options) {
     const { query, requester, addAll, ...playerOptions } = options;
     const result = await this.search(query, requester);
-    const queued = result.loadType === "playlist" || addAll ? result.tracks : result.tracks.slice(0, 1);
+    const queued = COLLECTION_LOAD_TYPES.has(result.loadType) || addAll ? result.tracks : result.tracks.slice(0, 1);
     if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
     const player = this.create(playerOptions);
     if (playerOptions.voiceChannel && player.voiceChannel !== playerOptions.voiceChannel) {
@@ -1895,7 +1923,11 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
       case "search":
         result.tracks = res.data.map(make);
         break;
-      case "playlist": {
+      case "playlist":
+      case "album":
+      case "artist":
+      case "podcast":
+      case "station": {
         const data = res.data;
         result.tracks = data.tracks.map(make);
         result.playlist = {

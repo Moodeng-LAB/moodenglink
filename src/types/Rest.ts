@@ -5,7 +5,7 @@
 
 import type { FilterPayload } from "./Filters";
 import type { PlayerState } from "./Op";
-import type { TrackData } from "./Player";
+import type { LoadType, TrackData } from "./Player";
 
 export type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
@@ -63,6 +63,31 @@ export interface LavalinkPlayer {
 }
 
 export interface LavalinkTrackLoadResult {
-	loadType: "track" | "playlist" | "search" | "empty" | "error";
+	loadType: LoadType;
 	data: unknown;
 }
+
+/* ------------------------- NodeLink `/v4/loadlyrics` ------------------------- */
+// NodeLink doesn't implement Lavalink's LavaLyrics-plugin REST shape (`/v4/lyrics`,
+// `/v4/sessions/{id}/players/{guildId}/track/lyrics`) — it exposes an equivalent,
+// differently-shaped `/v4/loadlyrics` endpoint instead. Rest maps this envelope
+// into the same `LyricsResult` Lavalink callers already get.
+
+export interface NodeLinkLyricsLine {
+	text: string;
+	time: number;
+	duration: number;
+	words?: Record<string, unknown>[];
+}
+
+export interface NodeLinkLyricsData {
+	name?: string;
+	synced?: boolean;
+	lines?: NodeLinkLyricsLine[];
+	provider?: string;
+}
+
+export type NodeLinkLyricsLoadResult =
+	| { loadType: "lyrics"; data: NodeLinkLyricsData }
+	| { loadType: "empty"; data: Record<string, never> }
+	| { loadType: "error"; data: { message: string; severity: string } };

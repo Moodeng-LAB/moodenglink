@@ -181,7 +181,14 @@ export interface QueueQuery {
 /** A fuzzy text query, declarative query, or custom predicate. */
 export type QueueMatcher = string | QueueQuery | ((track: QueueItem, index: number) => boolean);
 
-export type LoadType = "track" | "playlist" | "search" | "empty" | "error";
+/**
+ * `album` | `artist` | `podcast` | `station` are not part of standard Lavalink v4 —
+ * [NodeLink](https://github.com/PerformanC/NodeLink) returns them for sources that
+ * resolve to a named multi-track collection. Their `data` shape is identical to
+ * `playlist`'s (`{ info: { name, selectedTrack }, tracks }`), so Moodenglink treats
+ * them the same as `playlist` when building a {@link SearchResult}.
+ */
+export type LoadType = "track" | "playlist" | "album" | "artist" | "podcast" | "station" | "search" | "empty" | "error";
 
 export interface PlaylistInfo {
 	name: string;
