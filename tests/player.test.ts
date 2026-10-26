@@ -145,11 +145,7 @@ describe("Player.handleTrackEnd — repeat modes", () => {
 		await player.skip();
 
 		expect(player.current?.encoded).toBe("t2");
-		expect(update).toHaveBeenCalledWith(
-			"g1",
-			expect.objectContaining({ track: expect.objectContaining({ encoded: "t2" }) }),
-			false,
-		);
+		expect(update).toHaveBeenCalledWith("g1", expect.objectContaining({ track: expect.objectContaining({ encoded: "t2" }) }), false);
 	});
 
 	it("emits trackEnd context.intent for stop vs natural finish", async () => {
@@ -349,6 +345,20 @@ describe("Player.position interpolation", () => {
 		vi.advanceTimersByTime(10_000);
 		expect(player.position).toBe(3000); // frozen at the moment of pausing
 	});
+
+	it("scales the interpolated position by timescale speed and rate, ignoring pitch", () => {
+		vi.useFakeTimers();
+		const { player } = build();
+		player.queue.current = track("t1");
+		player.playing = true;
+		player.paused = false;
+		player.filters.timescale = { speed: 1.5, pitch: 2, rate: 1.2 };
+
+		player.updateState({ time: 1, position: 1000, connected: true, ping: 5 });
+		vi.advanceTimersByTime(1000);
+
+		expect(player.position).toBe(1000 + 1000 * 1.5 * 1.2);
+	});
 });
 
 describe("Player.handleTrackEnd — autoplay gating", () => {
@@ -385,12 +395,14 @@ describe("Player command transactions", () => {
 
 	it("restores a dequeued item when play fails", async () => {
 		const { player, update } = build();
+		player.connected = true;
 		player.queue.add(track("t1"));
 		update.mockRejectedValueOnce(new Error("node unavailable"));
 
 		await expect(player.play()).rejects.toThrow("node unavailable");
 
 		expect(player.current).toBeNull();
+		expect(player.playing).toBe(false);
 		expect(player.queue.map((item) => item.encoded)).toEqual(["t1"]);
 	});
 
@@ -453,5 +465,129 @@ describe("Player command transactions", () => {
 
 		const saved = JSON.parse((await store.get("moodenglink:player:g1"))!);
 		expect(saved.node).toBe("n2");
+	});
+});
+
+describe("Player.play — volume, endTime, and in-flight state", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it("does not copy player volume into the filter volume", async () => {
+		const { player, update } = build();
+		player.connected = true;
+		player.queue.add(track("t1"));
+
+		await player.setVolume(80);
+		await player.play();
+
+		expect(player.volume).toBe(80);
+		expect(player.filters.volume).toBe(1);
+		const playBody = update.mock.calls.at(-1)?.[1] as { volume?: number; filters?: { volume?: number } };
+		expect(playBody.volume).toBe(80);
+		expect(playBody.filters?.volume).toBe(1);
+	});
+
+	it("sends endTime null so a previous stop point does not stick", async () => {
+		const { player, update } = build();
+		player.connected = true;
+		player.queue.add([track("t1"), track("t2")]);
+
+		await player.play({ endTime: 12_000 });
+		await player.play();
+
+		expect(update.mock.calls[0]?.[1]).toMatchObject({ endTime: 12_000 });
+		expect(update.mock.calls[1]?.[1]).toMatchObject({ endTime: null });
+	});
+
+	it("lets trackStart see the new track while the play request is in flight", async () => {
+		const { manager, player, update } = build();
+		player.connected = true;
+		const next = track("t2");
+		next.requester = "alice";
+		player.queue.current = track("t1");
+		player.queue.add(next);
+		const started: Track[] = [];
+		manager.on("trackStart", (_player, startedTrack) => started.push(startedTrack));
+		update.mockImplementation(async () => {
+			expect(player.current).toBe(next);
+			player.handleTrackStart({
+				op: "event" as never,
+				type: EventTypes.TrackStartEvent,
+				guildId: "g1",
+				track: makeTrackData({ identifier: "t2" }, "t2"),
+			});
+			return {} as never;
+		});
+
+		await player.play();
+
+		expect(started).toEqual([next]);
+		expect(started[0]?.requester).toBe("alice");
+	});
+
+	it("starts paused until voice connects, then resumes", async () => {
+		const { player, update } = build();
+		player.queue.add(track("t1"));
+
+		await player.play();
+
+		expect(player.paused).toBe(true);
+		expect(player.playing).toBe(false);
+		expect(update).toHaveBeenCalledWith("g1", expect.objectContaining({ paused: true, endTime: null }), false);
+
+		update.mockClear();
+		player.updateState({ time: 1, position: 0, connected: true, ping: 5 });
+		await vi.waitFor(() => expect(player.paused).toBe(false));
+		expect(player.playing).toBe(true);
+		expect(update).toHaveBeenCalledWith("g1", { paused: false });
+	});
+
+	it("keeps a user-requested pause from resuming when voice connects", async () => {
+		const { player, update } = build();
+		player.queue.add(track("t1"));
+
+		await player.play({ paused: true });
+
+		expect(player.paused).toBe(true);
+		expect(player.playing).toBe(false);
+
+		update.mockClear();
+		player.updateState({ time: 1, position: 0, connected: true, ping: 5 });
+		await Promise.resolve();
+
+		expect(player.paused).toBe(true);
+		expect(player.playing).toBe(false);
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("does not resume when the user pauses while waiting for voice", async () => {
+		const { player, update } = build();
+		player.queue.add(track("t1"));
+		await player.play();
+		await player.pause();
+
+		update.mockClear();
+		player.updateState({ time: 1, position: 0, connected: true, ping: 5 });
+		await Promise.resolve();
+
+		expect(player.paused).toBe(true);
+		expect(player.playing).toBe(false);
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("rolls the previous track back when noReplace leaves it in place", async () => {
+		const { player, update } = build();
+		player.connected = true;
+		player.queue.current = track("t1");
+		player.playing = false;
+		player.paused = true;
+		player.queue.add(track("t2"));
+		update.mockResolvedValue({ track: { encoded: "t1" } } as never);
+
+		await player.play({ noReplace: true });
+
+		expect(player.current?.encoded).toBe("t1");
+		expect(player.playing).toBe(false);
+		expect(player.paused).toBe(true);
+		expect(player.queue.map((item) => item.encoded)).toEqual(["t2"]);
 	});
 });

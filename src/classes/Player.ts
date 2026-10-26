@@ -57,14 +57,17 @@ export class Player {
 	/**
 	 * The current playback position in ms. Lavalink only pushes a fresh position
 	 * every few seconds, so while a track is actively playing this interpolates
-	 * from the last report using elapsed wall-clock time (clamped to the track
-	 * duration) — giving an accurate value for progress bars between updates.
+	 * from the last report using elapsed wall-clock time scaled by
+	 * `timescale.speed * timescale.rate` (pitch does not move the playhead),
+	 * clamped to the track duration.
 	 */
 	public get position(): number {
 		// Fall back to the raw value when paused, stopped, or before the first report
 		// (a stale `_positionUpdatedAt` of 0 would otherwise add the whole epoch).
 		if (!this.playing || this.paused || this._positionUpdatedAt === 0) return this._position;
-		const live = this._position + (Date.now() - this._positionUpdatedAt);
+		const timescale = this.filters.timescale;
+		const scale = (timescale?.speed ?? 1) * (timescale?.rate ?? 1);
+		const live = this._position + (Date.now() - this._positionUpdatedAt) * scale;
 		const duration = this.current?.duration ?? 0;
 		return duration > 0 ? Math.min(live, duration) : live;
 	}
@@ -114,6 +117,15 @@ export class Player {
 	/** Coalesces bursts of recoverable voice-close events into one reconnect. */
 	private voiceReconnectPending = false;
 	private lastPositionSaveAt = 0;
+
+	/**
+	 * Playback started before Discord voice was connected, so it was sent paused.
+	 * Cleared when the user pauses on purpose. The next connected playerUpdate resumes.
+	 */
+	private resumeOnConnect = false;
+
+	/** Play REST calls currently in flight. The voice-hold resume waits until they settle. */
+	private playInFlight = 0;
 
 	constructor(manager: Moodenglink, options: PlayerOptions, node: Node) {
 		this.manager = manager;
@@ -274,37 +286,73 @@ export class Player {
 
 		if (!track) throw new Error("Queue is empty — nothing to play.");
 
+		// Commit before the REST call. Lavalink emits TrackStart while the request
+		// is still in flight, and an omitted endTime is not cleared on the node.
+		const requestedPause = options.paused === true;
+		const holdForVoice = !this.connected && !requestedPause;
+		const paused = requestedPause || holdForVoice;
+		const snapshot = {
+			current: previous,
+			paused: this.paused,
+			playing: this.playing,
+			position: this._position,
+			positionUpdatedAt: this._positionUpdatedAt,
+			resumeOnConnect: this.resumeOnConnect,
+		};
+		const rollback = () => {
+			if (dequeued) this.queue.unshift(dequeued);
+			this.queue.current = snapshot.current;
+			this.paused = snapshot.paused;
+			this.playing = snapshot.playing;
+			this._position = snapshot.position;
+			this._positionUpdatedAt = snapshot.positionUpdatedAt;
+			this.resumeOnConnect = snapshot.resumeOnConnect;
+		};
+
+		this.queue.current = track;
+		this.paused = paused;
+		this.playing = !paused;
+		this.position = options.startTime ?? 0;
+		this.resumeOnConnect = holdForVoice;
+
 		const body: UpdatePlayerBody = {
 			track: { encoded: track.encoded, userData: track.userData ?? {} },
 			volume: this.volume,
 			filters: this.filters.toJSON(),
+			endTime: options.endTime ?? null,
 		};
 		if (options.startTime !== undefined) body.position = options.startTime;
-		if (options.endTime !== undefined) body.endTime = options.endTime;
-		if (options.paused !== undefined) body.paused = options.paused;
+		if (options.paused !== undefined || holdForVoice) body.paused = paused;
 
+		this.playInFlight++;
 		let response: LavalinkPlayer;
 		try {
 			response = await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
 		} catch (error) {
-			if (dequeued) this.queue.unshift(dequeued);
-			this.queue.current = previous;
+			rollback();
 			throw error;
+		} finally {
+			this.playInFlight--;
 		}
-		if ((this.state as State) === "DESTROYING" || this.manager.players.get(this.guild) !== this) return this;
+		if ((this.state as State) === "DESTROYING" || this.manager.players.get(this.guild) !== this) {
+			this.resumeOnConnect = false;
+			return this;
+		}
 
 		// Lavalink leaves the existing track untouched when noReplace is true.
 		// Keep the dequeued item and client state intact in that case.
 		if (options.noReplace && response?.track?.encoded && response.track.encoded !== track.encoded) {
-			if (dequeued) this.queue.unshift(dequeued);
+			rollback();
 			return this;
 		}
 
-		this.queue.current = track;
-		this.playing = true;
-		this.paused = options.paused ?? false;
-		this.position = options.startTime ?? 0;
 		await this.save();
+		// Voice may have connected while this request was in flight. Resume only
+		// after it settles so the paused play cannot land after the unpause.
+		if (this.resumeOnConnect && this.connected) {
+			this.resumeOnConnect = false;
+			await this.resume();
+		}
 		return this;
 	}
 
@@ -375,7 +423,11 @@ export class Player {
 	public async pause(state = true): Promise<this> {
 		// Freeze the interpolated position at the instant of pausing, so it doesn't
 		// revert to the last (older) node report while paused.
-		if (state) this.position = this.position;
+		// A user pause cancels a voice-hold resume that play() armed.
+		if (state) {
+			this.position = this.position;
+			this.resumeOnConnect = false;
+		}
 		await this.node.rest.updatePlayer(this.guild, { paused: state });
 		this.paused = state;
 		this.playing = !state && this.current !== null;
@@ -398,12 +450,14 @@ export class Player {
 		return this;
 	}
 
-	/** Sets the volume (0-1000). */
+	/**
+	 * Sets the player volume (0-1000). This is independent of {@link Filters.volume}:
+	 * Lavalink multiplies the two, so copying one into the other quiets the next track.
+	 */
 	public async setVolume(volume: number): Promise<this> {
 		const next = clamp(volume, 0, 1000);
 		await this.node.rest.updatePlayer(this.guild, { volume: next });
 		this.volume = next;
-		this.filters.volume = next / 100;
 		await this.save();
 		return this;
 	}
@@ -548,6 +602,10 @@ export class Player {
 		if (state.connected) {
 			this.voiceReconnectAttempts = 0;
 			if (this.state === "RESUMING" || this.state === "CONNECTING") this.state = "CONNECTED";
+			if (this.resumeOnConnect && this.playInFlight === 0) {
+				this.resumeOnConnect = false;
+				void this.resume().catch((error) => this.manager.emit("nodeError", this.node, error as Error));
+			}
 		}
 		this.manager.emit("playerStateUpdate", this);
 		const interval = this.manager.options.positionSaveInterval ?? 15_000;
@@ -710,8 +768,14 @@ export class Player {
 	public async handleSocketClosed(payload: WebSocketClosedEvent): Promise<void> {
 		this.manager.emit("socketClosed", this, payload);
 
+		// moveNode destroys the player on the old node, which closes voice.
+		// Re-sending OP 4 here races the move.
+		if (this.state === "MOVING") return;
+
 		// Never fight an intentional teardown, and only recover a real channel.
 		if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel || this.voiceReconnectPending) return;
+		// 4014 + byRemote is a kick or an intentional leave. 4006/4009/4015/1006 still reconnect.
+		if (payload.code === 4014 && payload.byRemote) return;
 		if (!Player.RECOVERABLE_VOICE_CLOSE.has(payload.code)) return;
 
 		const maxTries = this.manager.options.voiceReconnectTries ?? 3;

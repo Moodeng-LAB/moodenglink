@@ -421,6 +421,26 @@ describe("Node — READY handshake", () => {
 
 		expect(node.isNodeLink).toBe(false);
 	});
+
+	it("rebinds in-memory players when the session was not resumed, without autoResume", async () => {
+		const manager = makeManager();
+		const node = new Node(manager, { host: "h" });
+		const restoreNodeState = vi.fn().mockResolvedValue(undefined);
+		const otherRestore = vi.fn().mockResolvedValue(undefined);
+		manager.players.set("g1", { node, restoreNodeState } as never);
+		manager.players.set("g2", { node: {}, restoreNodeState: otherRestore } as never);
+		node.connect();
+		const socket = latestSocket();
+		vi.spyOn(node.rest, "updateSession").mockResolvedValue({ resuming: true, timeout: 60 });
+		vi.spyOn(node.rest, "getInfo").mockResolvedValue({ sourceManagers: [], filters: [], plugins: [] } as never);
+
+		fireReady(socket, { resumed: false });
+
+		await vi.waitFor(() => expect(restoreNodeState).toHaveBeenCalledOnce());
+		expect(otherRestore).not.toHaveBeenCalled();
+		expect(manager.resumePlayers).not.toHaveBeenCalled();
+		expect(manager.syncResumedPlayers).not.toHaveBeenCalled();
+	});
 });
 
 describe("Node — getters", () => {
@@ -505,9 +525,9 @@ describe("NodeCapabilityError", () => {
 			missingFilters: ["timescale"],
 			missingPlugins: ["lavalyrics-plugin"],
 		});
-		expect(error.message).toContain('sources=spotify');
-		expect(error.message).toContain('filters=timescale');
-		expect(error.message).toContain('plugins=lavalyrics-plugin');
+		expect(error.message).toContain("sources=spotify");
+		expect(error.message).toContain("filters=timescale");
+		expect(error.message).toContain("plugins=lavalyrics-plugin");
 		expect(error.message).not.toContain("node info unavailable");
 	});
 

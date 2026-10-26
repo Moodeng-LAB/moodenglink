@@ -46,6 +46,26 @@ describe("Player voice hardening", () => {
 		expect(send).not.toHaveBeenCalled();
 	});
 
+	it("does not reconnect a remote 4014 close", async () => {
+		const { player, send } = buildPlayer({ voiceReconnectDelay: 0 });
+		await player.handleSocketClosed(closed(4014));
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it("still reconnects a local 4014 close", async () => {
+		const { player, send } = buildPlayer({ voiceReconnectDelay: 0 });
+		await player.handleSocketClosed({ ...closed(4014), byRemote: false });
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(send.mock.calls[0][1].d.channel_id).toBe("vc1");
+	});
+
+	it("does not reconnect while the player is moving nodes", async () => {
+		const { player, send } = buildPlayer({ voiceReconnectDelay: 0 });
+		player.state = "MOVING";
+		await player.handleSocketClosed(closed(4006));
+		expect(send).not.toHaveBeenCalled();
+	});
+
 	it("does not reconnect when intentionally disconnecting", async () => {
 		const { player, send } = buildPlayer();
 		(player as unknown as { state: string }).state = "DISCONNECTING";

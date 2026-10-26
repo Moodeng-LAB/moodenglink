@@ -304,6 +304,53 @@ describe("Moodenglink players", () => {
 		expect(queued.map((track) => track.encoded)).toEqual(["E1", "E2"]);
 	});
 
+	it("starts a playlist at selectedTrack and appends the earlier tracks", async () => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({
+			loadType: "playlist",
+			data: {
+				info: { name: "Mix", selectedTrack: 2 },
+				tracks: [
+					makeTrackData({ title: "A" }, "A"),
+					makeTrackData({ title: "B" }, "B"),
+					makeTrackData({ title: "C" }, "C"),
+					makeTrackData({ title: "D" }, "D"),
+				],
+			},
+		});
+		vi.spyOn(node.rest, "updatePlayer").mockResolvedValue({} as never);
+
+		const { player, queued } = await manager.play({
+			guild: "g1",
+			voiceChannel: "vc1",
+			query: "https://www.youtube.com/watch?v=C&list=mix",
+		});
+
+		expect(queued.map((track) => track.encoded)).toEqual(["C", "D", "A", "B"]);
+		expect(player.current?.encoded).toBe("C");
+		expect(player.queue.map((track) => track.encoded)).toEqual(["D", "A", "B"]);
+	});
+
+	it("leaves playlist order alone when selectedTrack is negative", async () => {
+		const { manager, node } = buildManager();
+		vi.spyOn(node.rest, "loadTracks").mockResolvedValue({
+			loadType: "playlist",
+			data: {
+				info: { name: "Mix", selectedTrack: -1 },
+				tracks: [makeTrackData({ title: "A" }, "A"), makeTrackData({ title: "B" }, "B"), makeTrackData({ title: "C" }, "C")],
+			},
+		});
+		vi.spyOn(node.rest, "updatePlayer").mockResolvedValue({} as never);
+
+		const { queued } = await manager.play({
+			guild: "g1",
+			voiceChannel: "vc1",
+			query: "https://www.youtube.com/playlist?list=mix",
+		});
+
+		expect(queued.map((track) => track.encoded)).toEqual(["A", "B", "C"]);
+	});
+
 	it("does not return or race a player that is still destroying", async () => {
 		const { manager, node } = buildManager();
 		let release!: () => void;
@@ -500,6 +547,7 @@ describe("Moodenglink.resumePlayers", () => {
 		const existing = manager.create({ guild: "g1", voiceChannel: "vc1" });
 		existing.queue.add(seedTrack({ encoded: "LOCAL" }) as never);
 		const playSpy = vi.spyOn(existing, "play");
+		const restore = vi.spyOn(existing, "restoreNodeState").mockResolvedValue(undefined);
 		playSpy.mockClear();
 
 		await manager.resumePlayers(node);
@@ -507,6 +555,7 @@ describe("Moodenglink.resumePlayers", () => {
 		expect(manager.get("g1")).toBe(existing);
 		expect(existing.queue.map((item) => (item as { encoded: string }).encoded)).toEqual(["LOCAL"]);
 		expect(playSpy).not.toHaveBeenCalled();
+		expect(restore).not.toHaveBeenCalled();
 	});
 
 	it("restores paused state, filters, data, and unresolved queue items", async () => {
@@ -615,10 +664,7 @@ describe("Moodenglink.syncResumedPlayers", () => {
 		expect(player.filters.timescale?.speed).toBe(1.2);
 		expect(player.queue.map((item) => (item as { encoded: string }).encoded)).toEqual(["QUEUED"]);
 		expect(player.voiceState).toEqual({}); // never restore stale Discord credentials
-		expect(send).toHaveBeenCalledWith(
-			"g1",
-			expect.objectContaining({ op: 4, d: expect.objectContaining({ channel_id: "vc1" }) }),
-		);
+		expect(send).toHaveBeenCalledWith("g1", expect.objectContaining({ op: 4, d: expect.objectContaining({ channel_id: "vc1" }) }));
 		expect(playSpy).not.toHaveBeenCalled();
 	});
 
@@ -631,6 +677,28 @@ describe("Moodenglink.syncResumedPlayers", () => {
 
 		expect(await manager.syncResumedPlayers(node)).toBe(0);
 		expect(manager.players.size).toBe(1);
+	});
+
+	it("does not derive filter volume from the live player volume", async () => {
+		const store = new MemoryStore();
+		const { manager, node } = buildManager({ store, autoResume: true });
+		await seedStore(store, node, { volume: 100, filters: { volume: 1 } });
+		vi.spyOn(node.rest, "getPlayers").mockResolvedValue([
+			{
+				guildId: "g1",
+				track: makeTrackData({}, "LIVE_ENC"),
+				volume: 80,
+				paused: false,
+				state: { time: 1, position: 0, connected: true, ping: 5 },
+				filters: { volume: 1.5 },
+			},
+		] as never);
+
+		await manager.syncResumedPlayers(node);
+
+		const player = manager.get("g1")!;
+		expect(player.volume).toBe(80);
+		expect(player.filters.volume).toBe(1.5);
 	});
 });
 
@@ -697,6 +765,7 @@ describe("Moodenglink.updateVoiceState", () => {
 		const destroyed = vi.fn();
 		manager.on("playerDestroy", destroyed);
 		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		player.state = "CONNECTED";
 
 		manager.updateVoiceState({
 			t: "VOICE_STATE_UPDATE",
@@ -706,5 +775,55 @@ describe("Moodenglink.updateVoiceState", () => {
 
 		expect(manager.get("g1")).toBeUndefined();
 		expect(destroyed).toHaveBeenCalledWith(player, { reason: "voice-disconnect", disconnected: false });
+	});
+
+	it("does not destroy a player that disconnect() left on its own", async () => {
+		const { manager, node } = buildManager();
+		const destroy = vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		player.state = "CONNECTED";
+
+		player.disconnect();
+		manager.updateVoiceState({
+			t: "VOICE_STATE_UPDATE",
+			d: { guild_id: "g1", user_id: "bot-1", session_id: "sess", channel_id: null },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(destroy).not.toHaveBeenCalled();
+		expect(manager.get("g1")).toBe(player);
+		expect(player.voiceChannel).toBeNull();
+		expect(player.state).toBe("DISCONNECTED");
+	});
+
+	it("does not destroy when Discord echoes the leave during disconnect()", async () => {
+		const voice: { manager?: Moodenglink } = {};
+		const send = vi.fn((_guild: string, packet: { d?: { channel_id?: string | null } }) => {
+			if (packet.d?.channel_id === null) {
+				voice.manager?.updateVoiceState({
+					t: "VOICE_STATE_UPDATE",
+					d: { guild_id: "g1", user_id: "bot-1", session_id: "sess", channel_id: null },
+				});
+			}
+		});
+		const manager = new Moodenglink({
+			nodes: [{ host: "localhost", port: 2333, password: "p", identifier: "n1" }],
+			clientId: "bot-1",
+			send,
+		});
+		voice.manager = manager;
+		const node = manager.nodes.get("n1") as Node;
+		node.connected = true;
+		node.stats = makeStats() as never;
+		const destroy = vi.spyOn(node.rest, "destroyPlayer").mockResolvedValue(undefined);
+		const player = manager.create({ guild: "g1", voiceChannel: "vc1" });
+		player.state = "CONNECTED";
+
+		player.disconnect();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(destroy).not.toHaveBeenCalled();
+		expect(manager.get("g1")).toBe(player);
+		expect(player.state).toBe("DISCONNECTED");
 	});
 });

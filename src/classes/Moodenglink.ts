@@ -307,8 +307,15 @@ export class Moodenglink extends EventEmitter {
 	public async play(options: QuickPlayOptions): Promise<QuickPlayResult> {
 		const { query, requester, addAll, ...playerOptions } = options;
 		const result = await this.search(query, requester);
-		const queued = COLLECTION_LOAD_TYPES.has(result.loadType) || addAll ? result.tracks : result.tracks.slice(0, 1);
+		// A playlist URL that points at one video reports that index as selectedTrack.
+		// Start there; tracks after it follow, and tracks before it are appended.
+		const isCollection = COLLECTION_LOAD_TYPES.has(result.loadType);
+		let queued = isCollection || addAll ? result.tracks.slice() : result.tracks.slice(0, 1);
 		if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
+		const selected = isCollection ? result.playlist?.selectedTrack : undefined;
+		if (selected !== undefined && selected > 0 && selected < queued.length) {
+			queued = [...queued.slice(selected), ...queued.slice(0, selected)];
+		}
 
 		const player = this.create(playerOptions);
 		if (playerOptions.voiceChannel && player.voiceChannel !== playerOptions.voiceChannel) {
@@ -500,9 +507,12 @@ export class Moodenglink extends EventEmitter {
 			if (!player) return;
 
 			if (!state.channel_id) {
-				// The bot was disconnected from voice.
+				// disconnect() already moved to DISCONNECTING/DISCONNECTED before Discord
+				// echoes the null channel. That leave keeps the queue. A kick while
+				// CONNECTED still destroys unless the option opts out.
+				const selfInitiated = player.state === "DISCONNECTING" || player.state === "DISCONNECTED";
 				player.handleVoiceDisconnect();
-				if (this.options.playerBehavior?.destroyOnVoiceDisconnect !== false) {
+				if (!selfInitiated && this.options.playerBehavior?.destroyOnVoiceDisconnect !== false) {
 					void player.destroy({ disconnect: false, reason: "voice-disconnect" });
 				}
 				return;
@@ -561,11 +571,9 @@ export class Moodenglink extends EventEmitter {
 				const data = JSON.parse(raw) as ReturnType<Player["toJSON"]>;
 				if (data.node !== node.id || typeof data.guild !== "string" || !data.guild) continue;
 				if (typeof data.voiceChannel !== "string") continue;
-				const existing = this.players.get(data.guild);
-				if (existing) {
-					if (replay && existing.node === node) await existing.restoreNodeState();
-					continue;
-				}
+				// In-memory players are rebound from the node's ready handler.
+				// Hydrating them here as well would restore the same guild twice.
+				if (this.players.has(data.guild)) continue;
 
 				player = this.hydratePlayerFromStore(node, data);
 				if (!player) continue;
@@ -648,10 +656,9 @@ export class Moodenglink extends EventEmitter {
 
 				// Prefer live Lavalink state over the (possibly stale) store snapshot.
 				if (livePlayer.filters) player.filters.load(livePlayer.filters);
-				if (typeof livePlayer.volume === "number") {
-					player.volume = livePlayer.volume;
-					player.filters.volume = livePlayer.volume / 100;
-				}
+				// Player volume (0-1000) and filter volume are multiplied by Lavalink.
+				// Keep whatever filter volume the live filters (or the store) already have.
+				if (typeof livePlayer.volume === "number") player.volume = livePlayer.volume;
 				player.paused = livePlayer.paused === true;
 				player.position = livePlayer.state?.position ?? 0;
 				if (livePlayer.track) {

@@ -225,6 +225,19 @@ export class Node {
 		const kind = this.isNodeLink === null ? "unknown" : this.isNodeLink ? "NodeLink" : "Lavalink";
 		this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}, kind=${kind}).`);
 
+		// A non-resumed session dropped every player on this node. Rebind voice and
+		// playback for guilds still in memory even when autoResume is off — otherwise
+		// they stay silent. resumePlayers only hydrates guilds that are not already
+		// in the map, so this does not restore the same guild twice.
+		if (!payload.resumed) {
+			const local = [...this.manager.players.values()].filter((player) => player.node === this);
+			for (const player of local) {
+				// destroy() can remove the guild while an earlier restore is still awaiting.
+				if (player.state === "DESTROYING" || (player.guild !== undefined && this.manager.players.get(player.guild) !== player)) continue;
+				await player.restoreNodeState().catch((error) => this.manager.emit("nodeError", this, error as Error));
+			}
+		}
+
 		// Only restore from the store on a *cold* session. When `resumed` is true the
 		// node kept our previous session alive and is still playing, so replaying
 		// from the persisted position would restart/jump every live track.
