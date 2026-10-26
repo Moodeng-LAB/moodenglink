@@ -789,6 +789,13 @@ var Node = class {
     this.manager.emit("nodeConnect", this);
     const kind = this.isNodeLink === null ? "unknown" : this.isNodeLink ? "NodeLink" : "Lavalink";
     this.manager.emit("debug", `[Node ${this.id}] Ready (session=${payload.sessionId}, resumed=${payload.resumed}, kind=${kind}).`);
+    if (!payload.resumed) {
+      const local = [...this.manager.players.values()].filter((player) => player.node === this);
+      for (const player of local) {
+        if (player.state === "DESTROYING" || player.guild !== void 0 && this.manager.players.get(player.guild) !== player) continue;
+        await player.restoreNodeState().catch((error) => this.manager.emit("nodeError", this, error));
+      }
+    }
     if (this.manager.options.autoResume) {
       if (payload.resumed) {
         await this.manager.syncResumedPlayers(this).catch(() => null);
@@ -967,6 +974,13 @@ var Player = class _Player {
     /** Coalesces bursts of recoverable voice-close events into one reconnect. */
     this.voiceReconnectPending = false;
     this.lastPositionSaveAt = 0;
+    /**
+     * Playback started before Discord voice was connected, so it was sent paused.
+     * Cleared when the user pauses on purpose. The next connected playerUpdate resumes.
+     */
+    this.resumeOnConnect = false;
+    /** Play REST calls currently in flight. The voice-hold resume waits until they settle. */
+    this.playInFlight = 0;
     this.manager = manager;
     this.node = node;
     this.guild = options.guild;
@@ -982,12 +996,15 @@ var Player = class _Player {
   /**
    * The current playback position in ms. Lavalink only pushes a fresh position
    * every few seconds, so while a track is actively playing this interpolates
-   * from the last report using elapsed wall-clock time (clamped to the track
-   * duration) — giving an accurate value for progress bars between updates.
+   * from the last report using elapsed wall-clock time scaled by
+   * `timescale.speed * timescale.rate` (pitch does not move the playhead),
+   * clamped to the track duration.
    */
   get position() {
     if (!this.playing || this.paused || this._positionUpdatedAt === 0) return this._position;
-    const live = this._position + (Date.now() - this._positionUpdatedAt);
+    const timescale = this.filters.timescale;
+    const scale = (timescale?.speed ?? 1) * (timescale?.rate ?? 1);
+    const live = this._position + (Date.now() - this._positionUpdatedAt) * scale;
     const duration = this.current?.duration ?? 0;
     return duration > 0 ? Math.min(live, duration) : live;
   }
@@ -1118,32 +1135,62 @@ var Player = class _Player {
       }
     }
     if (!track) throw new Error("Queue is empty \u2014 nothing to play.");
+    const requestedPause = options.paused === true;
+    const holdForVoice = !this.connected && !requestedPause;
+    const paused = requestedPause || holdForVoice;
+    const snapshot = {
+      current: previous,
+      paused: this.paused,
+      playing: this.playing,
+      position: this._position,
+      positionUpdatedAt: this._positionUpdatedAt,
+      resumeOnConnect: this.resumeOnConnect
+    };
+    const rollback = () => {
+      if (dequeued) this.queue.unshift(dequeued);
+      this.queue.current = snapshot.current;
+      this.paused = snapshot.paused;
+      this.playing = snapshot.playing;
+      this._position = snapshot.position;
+      this._positionUpdatedAt = snapshot.positionUpdatedAt;
+      this.resumeOnConnect = snapshot.resumeOnConnect;
+    };
+    this.queue.current = track;
+    this.paused = paused;
+    this.playing = !paused;
+    this.position = options.startTime ?? 0;
+    this.resumeOnConnect = holdForVoice;
     const body = {
       track: { encoded: track.encoded, userData: track.userData ?? {} },
       volume: this.volume,
-      filters: this.filters.toJSON()
+      filters: this.filters.toJSON(),
+      endTime: options.endTime ?? null
     };
     if (options.startTime !== void 0) body.position = options.startTime;
-    if (options.endTime !== void 0) body.endTime = options.endTime;
-    if (options.paused !== void 0) body.paused = options.paused;
+    if (options.paused !== void 0 || holdForVoice) body.paused = paused;
+    this.playInFlight++;
     let response;
     try {
       response = await this.node.rest.updatePlayer(this.guild, body, options.noReplace ?? false);
     } catch (error) {
-      if (dequeued) this.queue.unshift(dequeued);
-      this.queue.current = previous;
+      rollback();
       throw error;
+    } finally {
+      this.playInFlight--;
     }
-    if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) return this;
-    if (options.noReplace && response?.track?.encoded && response.track.encoded !== track.encoded) {
-      if (dequeued) this.queue.unshift(dequeued);
+    if (this.state === "DESTROYING" || this.manager.players.get(this.guild) !== this) {
+      this.resumeOnConnect = false;
       return this;
     }
-    this.queue.current = track;
-    this.playing = true;
-    this.paused = options.paused ?? false;
-    this.position = options.startTime ?? 0;
+    if (options.noReplace && response?.track?.encoded && response.track.encoded !== track.encoded) {
+      rollback();
+      return this;
+    }
     await this.save();
+    if (this.resumeOnConnect && this.connected) {
+      this.resumeOnConnect = false;
+      await this.resume();
+    }
     return this;
   }
   /** @internal Resolves an unresolved queue item, swallowing failures (returns null). */
@@ -1198,7 +1245,10 @@ var Player = class _Player {
     return this.play({ track: prev });
   }
   async pause(state = true) {
-    if (state) this.position = this.position;
+    if (state) {
+      this.position = this.position;
+      this.resumeOnConnect = false;
+    }
     await this.node.rest.updatePlayer(this.guild, { paused: state });
     this.paused = state;
     this.playing = !state && this.current !== null;
@@ -1218,12 +1268,14 @@ var Player = class _Player {
     await this.save();
     return this;
   }
-  /** Sets the volume (0-1000). */
+  /**
+   * Sets the player volume (0-1000). This is independent of {@link Filters.volume}:
+   * Lavalink multiplies the two, so copying one into the other quiets the next track.
+   */
   async setVolume(volume) {
     const next = clamp(volume, 0, 1e3);
     await this.node.rest.updatePlayer(this.guild, { volume: next });
     this.volume = next;
-    this.filters.volume = next / 100;
     await this.save();
     return this;
   }
@@ -1341,6 +1393,10 @@ var Player = class _Player {
     if (state.connected) {
       this.voiceReconnectAttempts = 0;
       if (this.state === "RESUMING" || this.state === "CONNECTING") this.state = "CONNECTED";
+      if (this.resumeOnConnect && this.playInFlight === 0) {
+        this.resumeOnConnect = false;
+        void this.resume().catch((error) => this.manager.emit("nodeError", this.node, error));
+      }
     }
     this.manager.emit("playerStateUpdate", this);
     const interval = this.manager.options.positionSaveInterval ?? 15e3;
@@ -1456,7 +1512,9 @@ var Player = class _Player {
   /** @internal */
   async handleSocketClosed(payload) {
     this.manager.emit("socketClosed", this, payload);
+    if (this.state === "MOVING") return;
     if (this.state === "DESTROYING" || this.state === "DISCONNECTING" || !this.voiceChannel || this.voiceReconnectPending) return;
+    if (payload.code === 4014 && payload.byRemote) return;
     if (!_Player.RECOVERABLE_VOICE_CLOSE.has(payload.code)) return;
     const maxTries = this.manager.options.voiceReconnectTries ?? 3;
     if (this.voiceReconnectAttempts >= maxTries) {
@@ -1868,8 +1926,13 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
   async play(options) {
     const { query, requester, addAll, ...playerOptions } = options;
     const result = await this.search(query, requester);
-    const queued = COLLECTION_LOAD_TYPES.has(result.loadType) || addAll ? result.tracks : result.tracks.slice(0, 1);
+    const isCollection = COLLECTION_LOAD_TYPES.has(result.loadType);
+    let queued = isCollection || addAll ? result.tracks.slice() : result.tracks.slice(0, 1);
     if (!queued.length) throw new Error(`No tracks found for "${typeof query === "string" ? query : query.query}".`);
+    const selected = isCollection ? result.playlist?.selectedTrack : void 0;
+    if (selected !== void 0 && selected > 0 && selected < queued.length) {
+      queued = [...queued.slice(selected), ...queued.slice(0, selected)];
+    }
     const player = this.create(playerOptions);
     if (playerOptions.voiceChannel && player.voiceChannel !== playerOptions.voiceChannel) {
       player.setVoiceChannel(playerOptions.voiceChannel);
@@ -2020,8 +2083,9 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
       const player = this.players.get(state.guild_id);
       if (!player) return;
       if (!state.channel_id) {
+        const selfInitiated = player.state === "DISCONNECTING" || player.state === "DISCONNECTED";
         player.handleVoiceDisconnect();
-        if (this.options.playerBehavior?.destroyOnVoiceDisconnect !== false) {
+        if (!selfInitiated && this.options.playerBehavior?.destroyOnVoiceDisconnect !== false) {
           void player.destroy({ disconnect: false, reason: "voice-disconnect" });
         }
         return;
@@ -2074,11 +2138,7 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
         const data = JSON.parse(raw);
         if (data.node !== node.id || typeof data.guild !== "string" || !data.guild) continue;
         if (typeof data.voiceChannel !== "string") continue;
-        const existing = this.players.get(data.guild);
-        if (existing) {
-          if (replay && existing.node === node) await existing.restoreNodeState();
-          continue;
-        }
+        if (this.players.has(data.guild)) continue;
         player = this.hydratePlayerFromStore(node, data);
         if (!player) continue;
         if (!replay) {
@@ -2145,10 +2205,7 @@ var Moodenglink = class _Moodenglink extends EventEmitter {
         const player = this.hydratePlayerFromStore(node, data);
         if (!player) continue;
         if (livePlayer.filters) player.filters.load(livePlayer.filters);
-        if (typeof livePlayer.volume === "number") {
-          player.volume = livePlayer.volume;
-          player.filters.volume = livePlayer.volume / 100;
-        }
+        if (typeof livePlayer.volume === "number") player.volume = livePlayer.volume;
         player.paused = livePlayer.paused === true;
         player.position = livePlayer.state?.position ?? 0;
         if (livePlayer.track) {

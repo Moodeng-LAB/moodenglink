@@ -931,8 +931,9 @@ declare class Player {
     /**
      * The current playback position in ms. Lavalink only pushes a fresh position
      * every few seconds, so while a track is actively playing this interpolates
-     * from the last report using elapsed wall-clock time (clamped to the track
-     * duration) — giving an accurate value for progress bars between updates.
+     * from the last report using elapsed wall-clock time scaled by
+     * `timescale.speed * timescale.rate` (pitch does not move the playhead),
+     * clamped to the track duration.
      */
     get position(): number;
     set position(value: number);
@@ -970,6 +971,13 @@ declare class Player {
     /** Coalesces bursts of recoverable voice-close events into one reconnect. */
     private voiceReconnectPending;
     private lastPositionSaveAt;
+    /**
+     * Playback started before Discord voice was connected, so it was sent paused.
+     * Cleared when the user pauses on purpose. The next connected playerUpdate resumes.
+     */
+    private resumeOnConnect;
+    /** Play REST calls currently in flight. The voice-hold resume waits until they settle. */
+    private playInFlight;
     constructor(manager: Moodenglink, options: PlayerOptions, node: Node);
     /** The track currently playing, if any. */
     get current(): Track | null;
@@ -1002,7 +1010,10 @@ declare class Player {
     resume(): Promise<this>;
     /** Seeks to `position` ms within the current track. */
     seek(position: number): Promise<this>;
-    /** Sets the volume (0-1000). */
+    /**
+     * Sets the player volume (0-1000). This is independent of {@link Filters.volume}:
+     * Lavalink multiplies the two, so copying one into the other quiets the next track.
+     */
     setVolume(volume: number): Promise<this>;
     /** Sets the repeat mode (`NONE`, `TRACK`, `QUEUE`). */
     setRepeatMode(mode: RepeatMode): this;
